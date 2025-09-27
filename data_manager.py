@@ -2,11 +2,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from qtpy.QtCore import QObject
-
-# It's good practice to place utility imports at the top.
-# The original gui.py had a try-except block for this import, 
-# which is better handled at the application's entry point.
-import cleaning_utils_cpu 
+import analysis_core
 
 class DataManager(QObject):
     """
@@ -30,8 +26,10 @@ class DataManager(QObject):
             self.spike_times = np.load(self.kilosort_dir / 'spike_times.npy').flatten()
             self.spike_clusters = np.load(self.kilosort_dir / 'spike_clusters.npy').flatten()
             self.channel_positions = np.load(self.kilosort_dir / 'channel_positions.npy')
+            
             info_path = self.kilosort_dir / 'cluster_info.tsv'
             group_path = self.kilosort_dir / 'cluster_group.tsv'
+
             if info_path.exists():
                 self.info_path = info_path
                 self.cluster_info = pd.read_csv(info_path, sep='\t')
@@ -39,7 +37,17 @@ class DataManager(QObject):
                 self.info_path = group_path
                 self.cluster_info = pd.read_csv(group_path, sep='\t')
             else:
-                raise FileNotFoundError("'cluster_info.tsv' or 'cluster_group.tsv' not found.")
+                # --- MODIFICATION START ---
+                # If no TSV is found, create a default DataFrame instead of erroring.
+                print("Info: 'cluster_info.tsv' or 'cluster_group.tsv' not found. Labeling all clusters as 'unsorted'.")
+                self.info_path = None # No original path to base the save-name on
+                all_cluster_ids = np.unique(self.spike_clusters)
+                self.cluster_info = pd.DataFrame({
+                    'cluster_id': all_cluster_ids,
+                    'group': ['unsorted'] * len(all_cluster_ids)
+                })
+                # --- MODIFICATION END ---
+
             self._load_kilosort_params()
             return True, "Successfully loaded Kilosort data."
         except Exception as e:
@@ -100,12 +108,12 @@ class DataManager(QObject):
         if len(spike_times_cluster) == 0: return None
         sample_size = min(len(spike_times_cluster), max_spikes_for_vis)
         spike_sample = np.random.choice(spike_times_cluster, size=sample_size, replace=False)
-        snippets_raw = cleaning_utils_cpu.extract_snippets(str(self.dat_path), spike_sample, n_channels=self.n_channels)
+        snippets_raw = analysis_core.extract_snippets(str(self.dat_path), spike_sample, n_channels=self.n_channels)
         snippets_uV = snippets_raw.astype(np.float32) * self.uV_per_bit
         if snippets_uV.shape[2] == 0: return None
         pre_samples = 20
-        snippets_bc = cleaning_utils_cpu.baseline_correct(snippets_uV, pre_samples=pre_samples)
-        mean_ei = cleaning_utils_cpu.compute_ei(snippets_bc, pre_samples=pre_samples)
+        snippets_bc = analysis_core.baseline_correct(snippets_uV, pre_samples=pre_samples)
+        mean_ei = analysis_core.compute_ei(snippets_bc, pre_samples=pre_samples)
         features = {'mean_ei': mean_ei, 'raw_snippets': snippets_bc[:, :, :min(n_raw_snippets, snippets_bc.shape[2])]}
         self.ei_cache[cluster_id] = features
         return features
@@ -114,7 +122,7 @@ class DataManager(QObject):
         if cluster_id in self.heavyweight_cache: return self.heavyweight_cache[cluster_id]
         lightweight_data = self.get_lightweight_features(cluster_id)
         if not lightweight_data: return None
-        features = cleaning_utils_cpu.compute_spatial_features(
+        features = analysis_core.compute_spatial_features(
             lightweight_data['mean_ei'], self.channel_positions, self.sampling_rate)
         self.heavyweight_cache[cluster_id] = features
         return features
