@@ -3,6 +3,7 @@ import pandas as pd
 from pathlib import Path
 from qtpy.QtCore import QObject
 import analysis_core
+import vision_integration # --- New Import ---
 
 class DataManager(QObject):
     """
@@ -20,6 +21,12 @@ class DataManager(QObject):
         self.original_cluster_df = pd.DataFrame()
         self.info_path = None
         self.uV_per_bit = 0.195
+        
+        # --- New Attributes for Vision Data ---
+        self.vision_eis = None
+        self.vision_stas = None
+        self.vision_params = None
+        # --- End New Attributes ---
 
     def load_kilosort_data(self):
         try:
@@ -37,21 +44,38 @@ class DataManager(QObject):
                 self.info_path = group_path
                 self.cluster_info = pd.read_csv(group_path, sep='\t')
             else:
-                # --- MODIFICATION START ---
-                # If no TSV is found, create a default DataFrame instead of erroring.
                 print("Info: 'cluster_info.tsv' or 'cluster_group.tsv' not found. Labeling all clusters as 'unsorted'.")
-                self.info_path = None # No original path to base the save-name on
+                self.info_path = None
                 all_cluster_ids = np.unique(self.spike_clusters)
                 self.cluster_info = pd.DataFrame({
                     'cluster_id': all_cluster_ids,
                     'group': ['unsorted'] * len(all_cluster_ids)
                 })
-                # --- MODIFICATION END ---
 
             self._load_kilosort_params()
             return True, "Successfully loaded Kilosort data."
         except Exception as e:
             return False, f"Error during Kilosort data loading: {e}"
+
+    # --- New Method for Vision Data ---
+    def load_vision_data(self, vision_dir):
+        """
+        Loads EI, STA, and params data from a specified Vision directory.
+        """
+        vision_path = Path(vision_dir)
+        dataset_name = vision_path.name
+        
+        vision_data = vision_integration.load_vision_data(vision_path, dataset_name)
+        
+        if vision_data:
+            self.vision_eis = vision_data.get('ei')
+            self.vision_stas = vision_data.get('sta')
+            self.vision_params = vision_data.get('params')
+            print("Vision data has been loaded into the DataManager.")
+            return True, f"Successfully loaded Vision data for {dataset_name}."
+        else:
+            return False, "Failed to load any Vision data."
+    # --- End New Method ---
 
     def _load_kilosort_params(self):
         params_path = self.kilosort_dir / 'params.py'
@@ -152,3 +176,4 @@ class DataManager(QObject):
         refractory_period_samples = (refractory_period_ms / 1000.0) * self.sampling_rate
         violations = np.sum(isis < refractory_period_samples)
         return (violations / (len(spike_times_cluster) - 1)) * 100
+
