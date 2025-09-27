@@ -116,28 +116,28 @@ def on_tab_changed(main_window, index):
         if cluster_id is None:
             return
         
-        # If Vision data is loaded for this cluster, just draw it.
-        if main_window.data_manager.vision_stas and cluster_id in main_window.data_manager.vision_stas:
-            plotting.draw_summary_plot(main_window, cluster_id)
-            main_window.spatial_plot_dirty = False
-            return
-            
-        # Otherwise, check the heavyweight cache or queue it.
-        if cluster_id in main_window.data_manager.heavyweight_cache:
-            plotting.draw_summary_plot(main_window, cluster_id)
-            main_window.spatial_plot_dirty = False
-            return
-            
-        main_window.status_bar.showMessage(f"Requesting spatial analysis for C{cluster_id}...", 3000)
-        main_window.summary_canvas.fig.clear()
-        main_window.summary_canvas.fig.text(0.5, 0.5, f"Loading C{cluster_id}...", ha='center', va='center', color='white')
-        main_window.summary_canvas.draw()
-        QApplication.processEvents()
-        
-        if main_window.spatial_worker:
-            main_window.spatial_worker.add_to_queue(cluster_id, high_priority=True)
-            
+        # --- MODIFICATION START ---
+        # The plotting function now handles the logic of what to draw.
+        # We just need to call it. This completes the Vision data connection.
+        plotting.draw_summary_plot(main_window, cluster_id)
         main_window.spatial_plot_dirty = False
+        
+        # If we drew the Vision RF, we don't need the worker. 
+        # If not, the plot function will have used the heavyweight cache.
+        # If that was empty too, we need to queue the worker.
+        if not (main_window.data_manager.vision_stas and cluster_id in main_window.data_manager.vision_stas) and \
+           cluster_id not in main_window.data_manager.heavyweight_cache:
+            
+            main_window.status_bar.showMessage(f"Requesting spatial analysis for C{cluster_id}...", 3000)
+            main_window.summary_canvas.fig.clear()
+            main_window.summary_canvas.fig.text(0.5, 0.5, f"Loading C{cluster_id}...", ha='center', va='center', color='white')
+            main_window.summary_canvas.draw()
+            QApplication.processEvents()
+            
+            if main_window.spatial_worker:
+                main_window.spatial_worker.add_to_queue(cluster_id, high_priority=True)
+        # --- MODIFICATION END ---
+
 
 def on_spatial_data_ready(main_window, cluster_id, features):
     """Callback for when heavyweight spatial features are ready from the worker."""
