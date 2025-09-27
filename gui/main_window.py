@@ -7,7 +7,7 @@ from collections import deque
 from qtpy.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTableView, QPushButton, QFileDialog, QSplitter, QStatusBar,
-    QHeaderView, QMessageBox, QTabWidget, QLabel, QFrame
+    QHeaderView, QMessageBox, QTabWidget
 )
 from qtpy.QtCore import (
     Qt, QObject, QThread, Signal
@@ -178,12 +178,20 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
-        load_action = file_menu.addAction("&Load Kilosort Directory...")
+        
+        load_ks_action = file_menu.addAction("&Load Kilosort Directory...")
+        
+        # --- MODIFICATION START ---
+        self.load_vision_action = file_menu.addAction("&Load Vision Files...")
+        self.load_vision_action.setEnabled(False) # Disabled until Kilosort data is loaded
+        # --- MODIFICATION END ---
+        
         self.save_action = file_menu.addAction("&Save Results...")
         self.save_action.setEnabled(False)
         
         # --- Connect Signals to Slots ---
-        load_action.triggered.connect(self.load_directory)
+        load_ks_action.triggered.connect(self.load_directory)
+        self.load_vision_action.triggered.connect(self.load_vision_directory) # --- New Connection ---
         self.save_action.triggered.connect(self.on_save_action)
         self.filter_button.clicked.connect(self._apply_good_filter)
         self.reset_button.clicked.connect(self._reset_table_view)
@@ -218,7 +226,31 @@ class MainWindow(QMainWindow):
         self._setup_gui_with_data()
         self._start_worker()
         self.central_widget.setEnabled(True)
+        self.load_vision_action.setEnabled(True) # --- Enable Vision loading ---
         self.status_bar.showMessage(f"Successfully loaded {len(self.data_manager.cluster_df)} clusters.", 5000)
+
+    # --- New Method for Vision Directory ---
+    def load_vision_directory(self):
+        if not self.data_manager:
+            QMessageBox.warning(self, "No Kilosort Data", "Please load a Kilosort directory first.")
+            return
+
+        vision_dir_name = QFileDialog.getExistingDirectory(self, "Select Vision Analysis Directory")
+        if not vision_dir_name:
+            return
+
+        self.status_bar.showMessage(f"Loading Vision files from {Path(vision_dir_name).name}...")
+        QApplication.processEvents()
+
+        success, message = self.data_manager.load_vision_data(vision_dir_name)
+
+        if success:
+            self.status_bar.showMessage(message, 5000)
+            # Future: Trigger a UI update to reflect the new data
+        else:
+            QMessageBox.critical(self, "Vision Loading Error", message)
+            self.status_bar.showMessage("Vision loading failed.", 5000)
+    # --- End New Method ---
 
     def _start_worker(self):
         if self.worker_thread is not None: self._stop_worker()
@@ -302,7 +334,6 @@ class MainWindow(QMainWindow):
             self._draw_summary_plot(cluster_id)
             self.status_bar.showMessage("Spatial analysis complete.", 2000)
 
-    # --- Refinement Logic ---
     def on_refine_cluster(self):
         cluster_id = self._get_selected_cluster_id()
         if cluster_id is None:
@@ -336,14 +367,24 @@ class MainWindow(QMainWindow):
         self.refine_thread.quit()
         self.refine_thread.wait()
 
-    # --- File Saving Logic ---
     def on_save_action(self):
-        if self.data_manager and self.data_manager.info_path:
-            original_path = self.data_manager.info_path
+        # --- MODIFICATION START ---
+        if self.data_manager:
+            if self.data_manager.info_path:
+                # If an original TSV was loaded, suggest a name based on it.
+                original_path = self.data_manager.info_path
+                suggested_path = str(original_path.parent / f"{original_path.stem}_refined.tsv")
+            else:
+                # If no TSV was loaded, suggest a generic name in the Kilosort directory.
+                suggested_path = str(self.data_manager.kilosort_dir / "cluster_group_refined.tsv")
+
             save_path, _ = QFileDialog.getSaveFileName(self, "Save Refined Cluster Info",
-                str(original_path.parent / f"{original_path.stem}_refined.tsv"), "TSV Files (*.tsv)")
+                suggested_path, "TSV Files (*.tsv)")
+            
             if save_path:
                 self.save_results(save_path)
+        # --- MODIFICATION END ---
+
 
     def save_results(self, output_path):
         try:
@@ -359,7 +400,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save Error", f"Could not save the file: {e}")
             self.status_bar.showMessage("Save failed.", 5000)
 
-    # --- Plotting Methods ---
     def _draw_summary_plot(self, cluster_id):
         lightweight_features = self.data_manager.get_lightweight_features(cluster_id)
         heavyweight_features = self.data_manager.get_heavyweight_features(cluster_id)
@@ -430,7 +470,6 @@ class MainWindow(QMainWindow):
         self.fr_plot.setLabel('bottom', 'Time (s)')
         self.fr_plot.setLabel('left', 'Firing Rate (Hz)')
 
-    # --- Helper & UI State Methods ---
     def _get_selected_cluster_id(self):
         if not self.table_view.selectionModel().hasSelection(): return None
         row = self.table_view.selectionModel().selectedRows()[0].row()
