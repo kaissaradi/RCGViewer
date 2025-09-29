@@ -1,7 +1,8 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from qtpy.QtCore import QObject
+from qtpy.QtCore import QObject, Qt
+from qtpy.QtGui import QStandardItem
 import analysis_core
 import vision_integration # --- New Import ---
 
@@ -11,22 +12,29 @@ class DataManager(QObject):
     """
     is_dirty = False
 
-    def __init__(self, kilosort_dir):
+    def __init__(self, kilosort_dir, main_window=None):
         super().__init__()
         self.kilosort_dir = Path(kilosort_dir)
         self.ei_cache = {}
         self.heavyweight_cache = {}
+        self.isi_cache = {}  # Cache for ISI violation calculations
         self.dat_path = None
         self.cluster_df = pd.DataFrame()
         self.original_cluster_df = pd.DataFrame()
         self.info_path = None
         self.uV_per_bit = 0.195
+        self.main_window = main_window  # Reference to main window for tree operations
         
         # --- New Attributes for Vision Data ---
         self.vision_eis = None
         self.vision_stas = None
         self.vision_params = None
+        self.vision_sta_width = None  # Store stimulus width for coordinate alignment
+        self.vision_sta_height = None  # Store stimulus height for coordinate alignment
         # --- End New Attributes ---
+        
+        # Initialize raw data memmap attribute (will hold memmap object)
+        self.raw_data_memmap = None
 
     def load_kilosort_data(self):
         try:
@@ -62,19 +70,112 @@ class DataManager(QObject):
         """
         Loads EI, STA, and params data from a specified Vision directory.
         """
+        print(f"[DEBUG] Starting to load vision data from {vision_dir}")  # Debug
         vision_path = Path(vision_dir)
         dataset_name = vision_path.name
         
+        # To get the STA dimensions, we need to access them directly from the STAReader
+        # The STAReader has width and height attributes that represent the stimulus dimensions
+        print(f"[DEBUG] About to call vision_integration.load_vision_data")  # Debug
         vision_data = vision_integration.load_vision_data(vision_path, dataset_name)
+        print(f"[DEBUG] Completed vision_integration.load_vision_data call")  # Debug
         
         if vision_data:
             self.vision_eis = vision_data.get('ei')
             self.vision_stas = vision_data.get('sta')
             self.vision_params = vision_data.get('params')
-            print("Vision data has been loaded into the DataManager.")
+            
+            # Extract and store stimulus dimensions for coordinate alignment
+            # Get dimensions from the STA data structure if available
+            if self.vision_stas and len(self.vision_stas) > 0:
+                # Get the first available STA to extract dimensions
+                first_cell_id = next(iter(self.vision_stas))
+                first_sta = self.vision_stas[first_cell_id]
+                
+                # The STA structure is likely a container with red, green, blue channels
+                # Extract spatial dimensions from the shape of one of the channels
+                if hasattr(first_sta, 'red') and first_sta.red is not None:
+                    # Get the dimensions from the STA container
+                    # Use the shape of the red channel to extract width and height
+                    sta_shape = first_sta.red.shape
+                    if len(sta_shape) >= 2:
+                        # Dimensions are [height, width, timepoints]
+                        self.vision_sta_height = sta_shape[0]
+                        self.vision_sta_width = sta_shape[1]
+                    else:
+                        # If we only have 2 dimensions, they are likely [height, width]
+                        self.vision_sta_height = sta_shape[0]
+                        self.vision_sta_width = sta_shape[1]
+                else:
+                    # Fallback if red channel is not available
+                    print("Warning: Could not extract dimensions from STA data, using defaults.")
+                    self.vision_sta_width = 100
+                    self.vision_sta_height = 100
+            else:
+                # Fallback if no STA data is available
+                print("Warning: No STA data available to extract dimensions, using defaults.")
+                self.vision_sta_width = 100
+                self.vision_sta_height = 100
+            
+            print(f"Vision data has been loaded into the DataManager. STA dimensions: {self.vision_sta_width}x{self.vision_sta_height}")
             return True, f"Successfully loaded Vision data for {dataset_name}."
         else:
-            return False, "Failed to load any Vision data."
+            print(f"[DEBUG] Full vision loading failed, trying partial loading") # Debug
+            # Check if params or STA files exist even if the full loading failed
+            params_path = vision_path / 'sta_params.params'
+            sta_path = vision_path / 'sta_container.sta'
+            
+            if params_path.exists() or sta_path.exists():
+                print(f"[DEBUG] Found params or sta files, attempting partial load") # Debug
+                # Try to load the existing files one by one using the available functions
+                vision_data = {}
+                if params_path.exists():
+                    print(f"[DEBUG] Loading params data...") # Debug
+                    try:
+                        # Using the actual function name from vision_integration.py
+                        params_data = vision_integration.load_params_data(vision_path, dataset_name)
+                        vision_data['params'] = params_data
+                        print("Loaded Vision params data.")
+                    except Exception as e:
+                        print(f"Error loading params: {e}")
+                
+                if sta_path.exists():
+                    print(f"[DEBUG] Loading STA data...") # Debug
+                    try:
+                        # Using the actual function name from vision_integration.py
+                        sta_data = vision_integration.load_sta_data(vision_path, dataset_name)
+                        vision_data['sta'] = sta_data
+                        print("Loaded Vision STA data.")
+                        
+                        # Extract dimensions from STA if it was loaded
+                        if sta_data:
+                            first_cell_id = next(iter(sta_data))
+                            first_sta = sta_data[first_cell_id]
+                            if hasattr(first_sta, 'red') and first_sta.red is not None:
+                                sta_shape = first_sta.red.shape
+                                if len(sta_shape) >= 2:
+                                    self.vision_sta_height = sta_shape[0]
+                                    self.vision_sta_width = sta_shape[1]
+                                else:
+                                    self.vision_sta_height = sta_shape[0]
+                                    self.vision_sta_width = sta_shape[1]
+                    except Exception as e:
+                        print(f"Error loading STA: {e}")
+                
+                # Update the instance variables with any loaded data
+                self.vision_eis = vision_data.get('ei')
+                self.vision_stas = vision_data.get('sta')
+                self.vision_params = vision_data.get('params')
+                
+                if vision_data:  # If we loaded any data
+                    print(f"Partial Vision data has been loaded into the DataManager. STA dimensions: {self.vision_sta_width}x{self.vision_sta_height}")
+                    return True, f"Successfully loaded partial Vision data for {dataset_name}."
+                else:
+                    print(f"[DEBUG] No vision data could be loaded") # Debug
+                    return False, "Failed to load Vision data but files were found."
+            else:
+                print(f"[DEBUG] No vision files found in directory") # Debug
+                return False, "No Vision data files found in the directory."
     # --- End New Method ---
 
     def _load_kilosort_params(self):
@@ -97,11 +198,29 @@ class DataManager(QObject):
         else:
             self.dat_path_suggestion = suggested_path
 
+    def set_dat_path(self, dat_path):
+        """
+        Set the path to the raw data file and create a memory map for efficient access.
+        """
+        self.dat_path = Path(dat_path)
+        # Calculate the number of samples in the file based on its size
+        file_size = self.dat_path.stat().st_size
+        self.n_samples = file_size // (self.n_channels * 2)  # Assuming int16 (2 bytes) per sample
+        # Create a memory map to efficiently access the raw data without loading it all into RAM
+        self.raw_data_memmap = np.memmap(self.dat_path, dtype=np.int16, mode='r', 
+                                         shape=(self.n_samples, self.n_channels))
+
     def build_cluster_dataframe(self):
+        print(f"[DEBUG] Starting build_cluster_dataframe")  # Debug
         cluster_ids, n_spikes = np.unique(self.spike_clusters, return_counts=True)
+        print(f"[DEBUG] Found {len(cluster_ids)} clusters")  # Debug
+        
+        # Create initial dataframe without ISI violations for faster loading
         df = pd.DataFrame({'cluster_id': cluster_ids, 'n_spikes': n_spikes})
-        isi_rates_dict = self._calculate_all_isi_violations_vectorized()
-        df['isi_violations_pct'] = df['cluster_id'].map(isi_rates_dict).fillna(0)
+        
+        # Initialize ISI violations column with zeros for now
+        df['isi_violations_pct'] = 0.0
+        
         col = 'KSLabel' if 'KSLabel' in self.cluster_info.columns else 'group'
         if col not in self.cluster_info.columns: self.cluster_info[col] = 'unsorted'
         info_subset = self.cluster_info[['cluster_id', col]].rename(columns={col: 'KSLabel'})
@@ -109,19 +228,12 @@ class DataManager(QObject):
         df['status'] = 'Original'
         self.cluster_df = df[['cluster_id', 'KSLabel', 'n_spikes', 'isi_violations_pct', 'status']]
         self.original_cluster_df = self.cluster_df.copy()
+        print(f"[DEBUG] build_cluster_dataframe complete")  # Debug
+        
+        # Initialize an empty cache for ISI violations that will be populated as clusters are selected
+        self.isi_cache = {}
 
-    def _calculate_all_isi_violations_vectorized(self, refractory_period_ms=2.0):
-        rates_dict = {}
-        refractory_period_samples = (refractory_period_ms / 1000.0) * self.sampling_rate
-        for cid in np.unique(self.spike_clusters):
-            cluster_spikes = np.sort(self.spike_times[self.spike_clusters == cid])
-            if len(cluster_spikes) < 2:
-                rates_dict[cid] = 0.0
-                continue
-            isis = np.diff(cluster_spikes)
-            violations = np.sum(isis < refractory_period_samples)
-            rates_dict[cid] = (violations / (len(cluster_spikes) - 1)) * 100
-        return rates_dict
+    
 
     def get_cluster_spikes(self, cluster_id):
         return self.spike_times[self.spike_clusters == cluster_id]
@@ -137,8 +249,8 @@ class DataManager(QObject):
         if snippets_uV.shape[2] == 0: return None
         pre_samples = 20
         snippets_bc = analysis_core.baseline_correct(snippets_uV, pre_samples=pre_samples)
-        mean_ei = analysis_core.compute_ei(snippets_bc, pre_samples=pre_samples)
-        features = {'mean_ei': mean_ei, 'raw_snippets': snippets_bc[:, :, :min(n_raw_snippets, snippets_bc.shape[2])]}
+        median_ei = analysis_core.compute_ei(snippets_bc, pre_samples=pre_samples)
+        features = {'median_ei': median_ei, 'raw_snippets': snippets_bc[:, :, :min(n_raw_snippets, snippets_bc.shape[2])]}
         self.ei_cache[cluster_id] = features
         return features
 
@@ -147,9 +259,69 @@ class DataManager(QObject):
         lightweight_data = self.get_lightweight_features(cluster_id)
         if not lightweight_data: return None
         features = analysis_core.compute_spatial_features(
-            lightweight_data['mean_ei'], self.channel_positions, self.sampling_rate)
+            lightweight_data['median_ei'], self.channel_positions, self.sampling_rate)
         self.heavyweight_cache[cluster_id] = features
         return features
+
+    def get_nearest_channels(self, central_channel_idx, n_channels=3):
+        """
+        Find the n_channels nearest channels to the central_channel_idx based on physical positions.
+        Returns the indices of the nearest channels, ordered so the dominant channel can be placed in the center
+        (e.g., [neighbor_1, dominant_channel, neighbor_2]).
+        """
+        if self.channel_positions is None:
+            # If no channel positions are available, return consecutive channels
+            start_idx = max(0, central_channel_idx)
+            end_idx = min(self.n_channels, start_idx + n_channels)
+            return list(range(start_idx, end_idx))
+        
+        if central_channel_idx >= len(self.channel_positions):
+            # Use the last available channel
+            central_channel_idx = len(self.channel_positions) - 1
+
+        # Calculate Euclidean distance from the central channel to all other channels
+        central_pos = self.channel_positions[central_channel_idx]
+        distances = np.linalg.norm(self.channel_positions - central_pos, axis=1)
+        
+        # Get the indices of the n_channels closest channels (excluding the central channel itself)
+        nearest_indices = np.argsort(distances)[1:min(n_channels + 1, len(distances))]  # Exclude central channel at index 0
+        
+        # Create the list [neighbor_1, dominant_channel, neighbor_2] with the dominant channel in the middle
+        result = nearest_indices.tolist()
+        result.insert(1, central_channel_idx)  # Insert the central channel in the middle
+        
+        # Make sure we only return n_channels (default 3) total
+        if len(result) > n_channels:
+            result = result[:n_channels]
+        
+        return result
+
+    def get_raw_trace_snippet(self, channel_indices, start_sample, end_sample):
+        """
+        Get a snippet of raw trace data for specified channels and time range.
+        Apply the uV_per_bit conversion factor.
+        """
+        if self.raw_data_memmap is None:
+            return None
+        
+        # Ensure indices are within bounds
+        valid_channel_indices = [idx for idx in channel_indices if 0 <= idx < self.n_channels]
+        
+        # Ensure sample range is within bounds
+        start_sample = max(0, start_sample)
+        end_sample = min(self.n_samples, end_sample)
+        
+        if start_sample >= end_sample or len(valid_channel_indices) == 0:
+            # Return empty array with proper shape if no valid data
+            return np.array([]).reshape(0, 0)
+        
+        # Extract the requested data
+        raw_snippet = self.raw_data_memmap[start_sample:end_sample, valid_channel_indices]
+        
+        # Convert to microvolts using the conversion factor
+        uv_snippet = raw_snippet.astype(np.float32) * self.uV_per_bit
+        
+        return uv_snippet.T  # Transpose to have channels as rows and time as columns
         
     def update_after_refinement(self, parent_id, new_clusters_data):
         self.is_dirty = True
@@ -170,10 +342,108 @@ class DataManager(QObject):
         self.cluster_df = pd.concat([self.cluster_df, pd.DataFrame(new_rows)], ignore_index=True)
 
     def _calculate_isi_violations(self, cluster_id, refractory_period_ms=2.0):
+        # Check if we already have the ISI calculation for this cluster in cache
+        cache_key = (cluster_id, refractory_period_ms)
+        if cache_key in self.isi_cache:
+            return self.isi_cache[cache_key]
+            
         spike_times_cluster = self.get_cluster_spikes(cluster_id)
-        if len(spike_times_cluster) < 2: return 0.0
-        isis = np.diff(np.sort(spike_times_cluster))
-        refractory_period_samples = (refractory_period_ms / 1000.0) * self.sampling_rate
-        violations = np.sum(isis < refractory_period_samples)
-        return (violations / (len(spike_times_cluster) - 1)) * 100
+        if len(spike_times_cluster) < 2:
+            isi_value = 0.0
+        else:
+            isis = np.diff(np.sort(spike_times_cluster))
+            refractory_period_samples = (refractory_period_ms / 1000.0) * self.sampling_rate
+            violations = np.sum(isis < refractory_period_samples)
+            isi_value = (violations / (len(spike_times_cluster) - 1)) * 100
+            
+        # Cache the result
+        self.isi_cache[cache_key] = isi_value
+        return isi_value
+
+    def update_cluster_isi(self, cluster_id, isi_value):
+        """Update the ISI value for a single cluster in both dataframes."""
+        # Update the current cluster dataframe
+        mask = self.cluster_df['cluster_id'] == cluster_id
+        if mask.any():
+            self.cluster_df.loc[mask, 'isi_violations_pct'] = isi_value
+            
+        # Update the original cluster dataframe
+        mask_orig = self.original_cluster_df['cluster_id'] == cluster_id
+        if mask_orig.any():
+            self.original_cluster_df.loc[mask_orig, 'isi_violations_pct'] = isi_value
+
+    def save_tree_structure(self, file_path):
+        """
+        Save the current tree structure to a JSON file.
+        """
+        import json
+        
+        def serialize_item(item):
+            """Recursively serialize a QStandardItem and its children."""
+            item_data = {
+                'text': item.text(),
+                'data': item.data(),  # cluster_id for cells, None for groups
+                'child_count': item.rowCount()
+            }
+            
+            if item.rowCount() > 0:
+                item_data['children'] = []
+                for i in range(item.rowCount()):
+                    child_item = item.child(i)
+                    item_data['children'].append(serialize_item(child_item))
+            
+            return item_data
+        
+        tree_data = []
+        root_model = self.main_window.tree_model  # Access the main window's tree model
+        
+        for i in range(root_model.rowCount()):
+            item = root_model.item(i)
+            tree_data.append(serialize_item(item))
+        
+        with open(file_path, 'w') as f:
+            json.dump(tree_data, f, indent=2)
+
+    def load_tree_structure(self, file_path):
+        """
+        Load the tree structure from a JSON file.
+        """
+        import json
+        
+        with open(file_path, 'r') as f:
+            tree_data = json.load(f)
+        
+        def deserialize_item(item_data):
+            """Recursively deserialize an item and its children."""
+            item = QStandardItem(item_data['text'])
+            item.setEditable(False)
+            
+            # Set data (cluster_id for cells)
+            item.setData(item_data['data'], Qt.ItemDataRole.UserRole)
+            
+            # For groups, enable drop
+            if item_data['data'] is None:  # This is a group
+                item.setDropEnabled(True)
+            else:  # This is a cell
+                item.setDropEnabled(False)
+            
+            # Add children if they exist
+            if 'children' in item_data and item_data['children']:
+                for child_data in item_data['children']:
+                    child_item = deserialize_item(child_data)
+                    item.appendRow(child_item)
+            
+            return item
+        
+        # Clear the current tree
+        self.main_window.tree_model.clear()
+        
+        # Populate the tree with loaded data
+        for item_data in tree_data:
+            item = deserialize_item(item_data)
+            self.main_window.tree_model.appendRow(item)
+        
+        # Set the model to the tree view
+        self.main_window.setup_tree_model(self.main_window.tree_model)
+        self.main_window.tree_view.expandAll()
 

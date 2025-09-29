@@ -127,10 +127,11 @@ def baseline_correct(snips, pre_samples=20):
         return snips - snips[:, :pre_samples].mean(axis=1, keepdims=True)
 
 def compute_ei(snips, pre_samples=20):
-    """Computes the Electrical Image (average waveform) from snippets."""
+    """Computes the Electrical Image (median waveform) from snippets for robustness."""
     snips = baseline_correct(snips, pre_samples=pre_samples)
     snips_torch = torch.from_numpy(snips)
-    ei = torch.mean(snips_torch, dim=2).numpy()
+    # Use median for robustness to outlier spikes
+    ei = torch.median(snips_torch, dim=2).values.numpy()
     return ei
 
 def select_channels(ei, min_chan=30, max_chan=80, threshold=15):
@@ -276,7 +277,7 @@ def compute_spatial_features(ei, channel_positions, sampling_rate=20000, pre_sam
 # Plotting Functions
 # =============================================================================
 
-def plot_rich_ei(fig, ei, channel_positions, spatial_features, sampling_rate=20000, pre_samples=20):
+def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_rate=20000, pre_samples=20):
     """
     Creates a rich, multi-panel EI visualization.
     """
@@ -308,11 +309,11 @@ def plot_rich_ei(fig, ei, channel_positions, spatial_features, sampling_rate=200
     fig.colorbar(scatter2, ax=ax2, label='Time to Peak (ms)', shrink=0.8)
 
     ax3.set_title('Waveform Heatmap', color='white')
-    time_axis_ms = (np.arange(ei.shape[1]) - pre_samples) / sampling_rate * 1000
+    time_axis_ms = (np.arange(median_ei.shape[1]) - pre_samples) / sampling_rate * 1000
     if active_channels.sum() > 0:
         active_idx = np.where(active_channels)[0]
-        sorted_channel_idx = active_idx[np.argsort(ei.argmin(axis=1)[active_idx])]
-        waveform_matrix = ei[sorted_channel_idx]
+        sorted_channel_idx = active_idx[np.argsort(median_ei.argmin(axis=1)[active_idx])]
+        waveform_matrix = median_ei[sorted_channel_idx]
         im = ax3.imshow(waveform_matrix, aspect='auto', cmap='RdBu_r',
                         vmin=-np.percentile(np.abs(waveform_matrix), 98),
                         vmax=np.percentile(np.abs(waveform_matrix), 98),
@@ -327,8 +328,261 @@ def plot_rich_ei(fig, ei, channel_positions, spatial_features, sampling_rate=200
     ax1.axis('equal')
     ax2.axis('equal')
 
+
+
+def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, selected_cell_id=None):
+    """
+    Visualizes the receptive fields of all cells, highlighting the selected cell.
+    
+    Args:
+        fig (matplotlib.figure.Figure): The figure object to draw on.
+        vision_params (VisionCellDataTable): Object containing STAFit data for all cells.
+        sta_width (int, optional): Width of the stimulus in stixels.
+        sta_height (int, optional): Height of the stimulus in stixels.
+        selected_cell_id (int, optional): The 0-indexed ID of the currently selected cell.
+    """
+    fig.clear()
+    ax = fig.add_subplot(111)
+    
+    cell_ids = vision_params.get_cell_ids()
+    
+    if not cell_ids:
+        ax.text(0.5, 0.5, "No RF data available", ha='center', va='center', color='gray')
+        ax.set_title("Population Receptive Fields", color='white')
+        return
+
+    # Vision data uses 1-indexed cell IDs, so convert the 0-indexed ID from the GUI
+    vision_cell_id_selected = selected_cell_id + 1 if selected_cell_id is not None else None
+    
+    # Auto-determine plot boundaries
+    x_coords, y_coords = [], []
+    for cell_id in cell_ids:
+        try:
+            stafit = vision_params.get_stafit_for_cell(cell_id)
+            x_coords.append(stafit.center_x)
+            y_coords.append(stafit.center_y)
+        except Exception:
+            continue
+    
+    x_range = (min(x_coords) - 20, max(x_coords) + 20) if x_coords else (0, 100)
+    y_range = (min(y_coords) - 20, max(y_coords) + 20) if y_coords else (0, 100)
+    
+    # Loop through all cells and draw their RF ellipses
+    for cell_id in cell_ids:
+        try:
+            stafit = vision_params.get_stafit_for_cell(cell_id)
+            adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+            
+            if cell_id == vision_cell_id_selected:
+                # Style for the SELECTED cell
+                ellipse = Ellipse(
+                    xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
+                    angle=np.rad2deg(stafit.rot), edgecolor='cyan', facecolor=(0.0, 1.0, 1.0, 0.3),
+                    lw=2.0, alpha=1.0 
+                )
+            else:
+                # Style for ALL OTHER cells
+                ellipse = Ellipse(
+                    xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
+                    angle=np.rad2deg(stafit.rot), edgecolor='white', facecolor='none',
+                    lw=0.8, alpha=0.4 # Thinner and more transparent
+                )
+            ax.add_patch(ellipse)
+        except Exception:
+            continue
+    
+    # Style the plot
+    ax.set_xlim(x_range)
+    ax.set_ylim(y_range[1], y_range[0]) # Invert y-axis to match vision's coordinate system
+    ax.set_title("Population Receptive Fields", color='white')
+    ax.set_xlabel("X (stixels)", color='gray')
+    ax.set_ylabel("Y (stixels)", color='gray')
+    ax.set_facecolor('#1f1f1f')
+    ax.tick_params(colors='gray')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('gray')
+    ax.set_aspect('equal', adjustable='box')
+
+
+def plot_sta_timecourse(fig, sta_data, stafit, vision_params, cell_id, sampling_rate=20):
+    """
+    Visualizes the timecourse of the STA response for a specific cell.
+    The x-axis shows time from -500ms to 0ms before the spike.
+    
+    Args:
+        fig (matplotlib.figure.Figure): The figure object to draw on.
+        sta_data (STAContainer): Named tuple containing the raw STA movie.
+        stafit (STAFit): Named tuple containing the Gaussian fit parameters.
+        vision_params (VisionCellDataTable): Object containing pre-calculated timecourse data.
+        cell_id (int): The ID of the cell to plot (1-indexed for vision data).
+        sampling_rate (float): Sampling rate in Hz for the STA data (stixels per second).
+    """
+    fig.clear()
+    
+    timecourse_matrix = None
+    try:
+        red_tc = vision_params.get_data_for_cell(cell_id, 'RedTimeCourse')
+        green_tc = vision_params.get_data_for_cell(cell_id, 'GreenTimeCourse')
+        blue_tc = vision_params.get_data_for_cell(cell_id, 'BlueTimeCourse')
+        if red_tc is not None and green_tc is not None and blue_tc is not None:
+            timecourse_matrix = np.stack([red_tc, green_tc, blue_tc], axis=1)
+    except Exception:
+        timecourse_matrix = None
+
+    if timecourse_matrix is not None and hasattr(timecourse_matrix, 'shape'):
+        if len(timecourse_matrix.shape) == 2:
+            n_timepoints, n_channels = timecourse_matrix.shape
+            
+            # --- DYNAMIC X-AXIS CALCULATION ---
+            # Get the refresh time (in ms) from the STA data container.
+            # This makes the time axis accurate to the original experiment.
+            refresh_ms = getattr(sta_data, 'refresh_time', 1000.0 / 60.0) 
+            total_duration_ms = (n_timepoints - 1) * refresh_ms
+            
+            # Create the accurate time axis based on the data's properties
+            time_axis = np.linspace(-total_duration_ms, 0, n_timepoints)
+            
+            ax = fig.add_subplot(111)
+
+            n_channels_to_plot = min(n_channels, 3)
+            channel_names = ['Red', 'Green', 'Blue'][:n_channels_to_plot]
+            colors = ['red', 'green', 'blue'][:n_channels_to_plot]
+
+            for i in range(n_channels_to_plot):
+                ax.plot(time_axis, timecourse_matrix[:, i], color=colors[i], linewidth=1.5, label=channel_names[i])
+
+            ax.set_title("STA Timecourse (Pre-calculated)", color='white')
+            ax.set_xlabel("Time (ms)", color='gray')
+            ax.set_ylabel("Response", color='gray')
+            ax.grid(True, alpha=0.3)
+            ax.legend(facecolor='#1f1f1f', labelcolor='white')
+            
+            ax.set_facecolor('#1f1f1f')
+            ax.tick_params(colors='gray')
+            for spine in ax.spines.values():
+                spine.set_edgecolor('gray')
+            
+            ax.axvline(x=0, color='white', linestyle='--', alpha=0.7)
+            
+            # --- ACCURATE Y-AXIS SCALING ---
+            # This logic fits the axis tightly to the min/max of the saved data.
+            if timecourse_matrix.size > 0:
+                y_min = timecourse_matrix.min()
+                y_max = timecourse_matrix.max()
+                y_range = y_max - y_min if y_max > y_min else 1.0
+                y_margin = y_range * 0.10  # Add a 10% margin for readability
+                ax.set_ylim(y_min - y_margin, y_max + y_margin)
+                
+            return
+
+    # Fallback logic remains unchanged
+    print(f"Warning: Could not access pre-calculated timecourse data for cell {cell_id}, falling back to recalculation.")
+    
+    red_channel = sta_data.red
+    green_channel = sta_data.green
+    blue_channel = sta_data.blue
+    
+    n_timepoints = red_channel.shape[2]
+    
+    center_x = int(stafit.center_x)
+    center_y = int(stafit.center_y)
+    std_x = int(max(1, stafit.std_x))
+    std_y = int(max(1, stafit.std_y))
+    
+    x_min = max(0, center_x - std_x)
+    x_max = min(red_channel.shape[1], center_x + std_x + 1)
+    y_min = max(0, center_y - std_y)
+    y_max = min(red_channel.shape[0], center_y + std_y + 1)
+    
+    red_timecourse = np.mean(red_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
+    green_timecourse = np.mean(green_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
+    blue_timecourse = np.mean(blue_channel[y_min:y_max, x_min:x_max], axis=(0, 1))
+    
+    # Fallback uses a hardcoded duration as it has no refresh_time metadata
+    total_time_ms = 1500
+    time_axis = np.linspace(-total_time_ms, 0, n_timepoints)
+    
+    ax = fig.add_subplot(111)
+    
+    ax.plot(time_axis, red_timecourse, color='red', linewidth=1.5, label='Red')
+    ax.plot(time_axis, green_timecourse, color='green', linewidth=1.5, label='Green')
+    ax.plot(time_axis, blue_timecourse, color='blue', linewidth=1.5, label='Blue')
+    
+    ax.set_title("STA Timecourse (Recalculated)", color='white')
+    ax.set_xlabel("Time (ms)", color='gray')
+    ax.set_ylabel("Response", color='gray')
+    ax.grid(True, alpha=0.3)
+    ax.legend(facecolor='#1f1f1f', labelcolor='white')
+    
+    ax.set_facecolor('#1f1f1f')
+    ax.tick_params(colors='gray')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('gray')
+    
+    ax.axvline(x=0, color='white', linestyle='--', alpha=0.7)
+
+
+def animate_sta_movie(fig, sta_data, stafit=None, frame_index=0, sta_width=None, sta_height=None, ax=None):
+    """
+    Animates the STA movie by showing individual frames.
+    MODIFIED: Now optionally overlays the STAFit ellipse.
+    """
+    if ax is None:
+        fig.clear()
+        ax = fig.add_subplot(111)
+    
+    n_frames = sta_data.red.shape[2]
+    if frame_index >= n_frames:
+        frame_index = 0
+
+    red_frame = sta_data.red[:, :, frame_index]
+    green_frame = sta_data.green[:, :, frame_index]
+    blue_frame = sta_data.blue[:, :, frame_index]
+    
+    sta_rgb = np.stack([red_frame, green_frame, blue_frame], axis=-1)
+    
+    min_val, max_val = np.min(sta_rgb), np.max(sta_rgb)
+    if max_val != min_val:
+        sta_rgb_normalized = (sta_rgb - min_val) / (max_val - min_val)
+    else:
+        sta_rgb_normalized = np.zeros_like(sta_rgb)
+    
+    extent = [0, sta_width, sta_height, 0] if sta_width is not None else [0, red_frame.shape[1], red_frame.shape[0], 0]
+    
+    ax.imshow(sta_rgb_normalized, origin='upper', extent=extent)
+    
+    # --- ADDED: Logic to draw the STAFit ellipse if provided ---
+    if stafit:
+        if sta_height is not None:
+            adjusted_y = sta_height - stafit.center_y
+        else:
+            image_height = red_frame.shape[0]
+            adjusted_y = image_height - stafit.center_y
+        
+        ellipse = Ellipse(
+            xy=(stafit.center_x, adjusted_y),
+            width=2 * stafit.std_x,
+            height=2 * stafit.std_y,
+            angle=np.rad2deg(stafit.rot),
+            edgecolor='cyan',
+            facecolor='none',
+            lw=2
+        )
+        ax.add_patch(ellipse)
+    
+    ax.set_title(f"STA Movie - Frame {frame_index+1}/{n_frames}", color='white')
+    ax.set_xlabel("X (stixels)", color='gray')
+    ax.set_ylabel("Y (stixels)", color='gray')
+    ax.set_facecolor('#1f1f1f')
+    ax.tick_params(colors='gray')
+    for spine in ax.spines.values():
+        spine.set_edgecolor('gray')
+    
+    fig.tight_layout()
+
+
 # --- New Plotting Function for Vision RF ---
-def plot_vision_rf(fig, sta_data, stafit):
+def plot_vision_rf(fig, sta_data, stafit, sta_width=None, sta_height=None, ax=None):
     """
     Visualizes the receptive field from loaded Vision STA and parameter data.
     
@@ -336,33 +590,84 @@ def plot_vision_rf(fig, sta_data, stafit):
         fig (matplotlib.figure.Figure): The figure object to draw on.
         sta_data (STAContainer): Named tuple containing the raw STA movie.
         stafit (STAFit): Named tuple containing the Gaussian fit parameters.
+        sta_width (int, optional): Width of the stimulus in stixels. If None, inferred from data.
+        sta_height (int, optional): Height of the stimulus in stixels. If None, inferred from data.
+        ax (matplotlib.axes.Axes, optional): Axis to plot on. If None, creates a new subplot.
     """
-    fig.clear()
-    ax = fig.add_subplot(111)
+    if ax is None:
+        fig.clear()
+        ax = fig.add_subplot(111)
     
-    # Combine RGB channels to get a single grayscale STA for simplicity
-    # A more advanced version could plot each channel or the most significant one.
-    sta_rgb = np.stack([sta_data.red, sta_data.green, sta_data.blue], axis=-1)
-    sta_gray = np.mean(sta_rgb, axis=-1)
+    # Check if the STA has multiple color channels
+    red_channel = sta_data.red
+    green_channel = sta_data.green
+    blue_channel = sta_data.blue
     
-    # Find the peak frame (time index with the largest deviation from zero)
-    peak_frame_idx = np.argmax(np.max(np.abs(sta_gray), axis=(0, 1)))
-    peak_frame = sta_gray[:, :, peak_frame_idx]
+    # Determine the peak frame for each channel
+    peak_frame_idx_red = np.argmax(np.max(np.abs(red_channel), axis=(0, 1)))
+    peak_frame_idx_green = np.argmax(np.max(np.abs(green_channel), axis=(0, 1)))
+    peak_frame_idx_blue = np.argmax(np.max(np.abs(blue_channel), axis=(0, 1)))
     
-    # Display the peak STA frame
-    ax.imshow(peak_frame.T, cmap='gray', origin='lower',
-              extent=[0, peak_frame.shape[0], 0, peak_frame.shape[1]])
+    # Get the peak frames of each channel
+    red_frame = red_channel[:, :, peak_frame_idx_red]
+    green_frame = green_channel[:, :, peak_frame_idx_green]
+    blue_frame = blue_channel[:, :, peak_frame_idx_blue]
     
-    # Overlay the Gaussian fit ellipse
-    ellipse = Ellipse(
-        xy=(stafit.center_x, stafit.center_y),
-        width=2 * stafit.std_x,
-        height=2 * stafit.std_y,
-        angle=np.rad2deg(stafit.rot),
-        edgecolor='cyan',
-        facecolor='none',
-        lw=2
-    )
+    # Stack the peak frames to create a multi-channel RGB image
+    # Note: The actual protocol for combining channels depends on the stimulus type
+    # e.g., for blue-yellow protocol, you might want to show blue/yellow opponent channels
+    # For now, we'll create an RGB image from the peak frames
+    sta_rgb = np.stack([red_frame, green_frame, blue_frame], axis=-1)
+    
+    # Normalize the values to [0, 1] for proper color display
+    # Find min/max across all channels to maintain relative scaling
+    min_val = min(red_frame.min(), green_frame.min(), blue_frame.min())
+    max_val = max(red_frame.max(), green_frame.max(), blue_frame.max())
+    
+    if max_val != min_val:
+        sta_rgb_normalized = (sta_rgb - min_val) / (max_val - min_val)
+    else:
+        sta_rgb_normalized = np.zeros_like(sta_rgb)
+    
+    # Determine the extent for the imshow based on provided dimensions or data shape
+    if sta_width is not None and sta_height is not None:
+        # Use the provided dimensions for proper coordinate alignment
+        # With origin='upper', the extent is [left, right, top, bottom]
+        extent = [0, sta_width, sta_height, 0]
+    else:
+        # Fallback to the shape of the peak frame
+        extent = [0, red_frame.shape[1], red_frame.shape[0], 0]  # [0, width, height, 0]
+    
+    # Display the colored STA frame with correct orientation
+    ax.imshow(sta_rgb_normalized, origin='upper', extent=extent)
+    
+    # Overlay the Gaussian fit ellipse using Vision coordinates
+    # Since we're using origin='upper', the y-coordinate needs to be inverted
+    if sta_width is not None and sta_height is not None:
+        adjusted_y = sta_height - stafit.center_y
+        ellipse = Ellipse(
+            xy=(stafit.center_x, adjusted_y),
+            width=2 * stafit.std_x,
+            height=2 * stafit.std_y,
+            angle=np.rad2deg(stafit.rot),
+            edgecolor='cyan',
+            facecolor='none',
+            lw=2
+        )
+    else:
+        # Fallback: try to get dimensions from the image shape
+        image_height = red_frame.shape[0]  # height of the original frame
+        adjusted_y = image_height - stafit.center_y
+        ellipse = Ellipse(
+            xy=(stafit.center_x, adjusted_y),
+            width=2 * stafit.std_x,
+            height=2 * stafit.std_y,
+            angle=np.rad2deg(stafit.rot),
+            edgecolor='cyan',
+            facecolor='none',
+            lw=2
+        )
+        
     ax.add_patch(ellipse)
     
     # Style the plot
