@@ -56,37 +56,36 @@ def load_directory(main_window):
     else:
         populate_tree_view(main_window)  # Use the new tree view instead of table view
     
-    # Automatically check for and load vision files in the same directory
-    # Vision files might have different naming patterns, check common variations
-    # The visionloader library looks for files with the pattern {dataset_name}.{ext}
-    ks_dir_path = Path(ks_dir_name)
-    ks_folder_name = ks_dir_path.name  # Get the actual folder name (e.g., kilosort4)
-    
-    # Check if standard vision files exist (the ones shown in the error)
-    standard_vision_files = ['channel_positions.ei', 'sta_container.sta', 'sta_params.params']
+    # Automatically check for and load vision files in the same directory.
+    # We will search for any set of matching files (.ei, .sta, .params).
     vision_dir = Path(ks_dir_name)
-    standard_files_exist = all((vision_dir / vf).exists() for vf in standard_vision_files)
+    dataset_name = None
     
-    # Also check if files named after the folder exist (the pattern visionloader expects)
-    folder_named_files = [f'{ks_folder_name}.ei', f'{ks_folder_name}.sta', f'{ks_folder_name}.params']
-    folder_files_exist = all((vision_dir / vf).exists() for vf in folder_named_files)
-    
-    print(f"[DEBUG] Checking for standard vision files: {[str(vision_dir / vf) for vf in standard_vision_files]}")  # Debug
-    print(f"[DEBUG] Standard vision files exist: {standard_files_exist}")  # Debug
-    print(f"[DEBUG] Checking for folder-named vision files: {[str(vision_dir / vf) for vf in folder_named_files]}")  # Debug
-    print(f"[DEBUG] Folder-named vision files exist: {folder_files_exist}")  # Debug
-    
-    # Set vision files as existing if either pattern exists
-    vision_files_exist = standard_files_exist or folder_files_exist
-    
-    if vision_files_exist:
-        main_window.status_bar.showMessage("Found Vision files in directory - loading automatically...")
+    print(f"[DEBUG] Scanning for Vision files in {vision_dir}...")
+
+    # Find any .ei file and check if its siblings (.sta, .params) exist.
+    for ei_file in vision_dir.glob('*.ei'):
+        base_name = ei_file.stem  # Gets the filename without the extension
+        
+        # Check if the corresponding .sta and .params files exist
+        if (vision_dir / f'{base_name}.sta').exists() and \
+           (vision_dir / f'{base_name}.params').exists():
+            
+            dataset_name = base_name
+            print(f"[DEBUG] Found complete Vision file set with base name: '{dataset_name}'")
+            break  # Found a set, no need to check further
+
+    if dataset_name:
+        main_window.status_bar.showMessage(f"Found Vision files ('{dataset_name}') in directory - loading automatically...")
         QApplication.processEvents()
-        print(f"[DEBUG] Starting to load vision data from {vision_dir}")  # Debug
-        success, message = main_window.data_manager.load_vision_data(vision_dir)
-        print(f"[DEBUG] Vision data load completed. Success: {success}, Message: {message}")  # Debug
+        
+        # Call the updated method with the discovered dataset name
+        success, message = main_window.data_manager.load_vision_data(vision_dir, dataset_name)
+        
+        print(f"[DEBUG] Vision data load completed. Success: {success}, Message: {message}")
     else:
-        print(f"[DEBUG] No complete set of vision files found, skipping automatic vision loading") # Debug
+        print(f"[DEBUG] No complete set of .ei, .sta, and .params files found. Skipping automatic loading.")
+    
     
     start_worker(main_window)
     main_window.central_widget.setEnabled(True)
@@ -140,97 +139,66 @@ def load_vision_directory(main_window):
             main_window.status_bar.showMessage("Vision loading failed.", 5000)
 
 def on_cluster_selection_changed(main_window):
-    """Handles the UI updates when a new cluster is selected."""
+    """
+    Handles a cluster selection by triggering the main window's selection timer.
+    """
     cluster_id = main_window._get_selected_cluster_id()
     if cluster_id is None:
         return
-        
-    main_window.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}", 2000)
-    QApplication.processEvents()
     
-    lightweight_features = main_window.data_manager.get_lightweight_features(cluster_id)
-    if lightweight_features is None:
-        main_window.status_bar.showMessage(f"Could not generate EI for cluster {cluster_id}.", 3000)
-        main_window.waveform_plot.clear()
-        main_window.isi_plot.clear()
-        main_window.fr_plot.clear()
-        main_window.summary_canvas.fig.clear()
-        main_window.summary_canvas.fig.text(0.5, 0.5, "Select a cluster", ha='center', va='center', color='gray')
-        main_window.summary_canvas.draw()
-        return
-        
-    plotting.update_waveform_plot(main_window, cluster_id, lightweight_features)
-    plotting.update_isi_plot(main_window, cluster_id)
-    plotting.update_fr_plot(main_window, cluster_id)
-    
-    main_window.spatial_plot_dirty = True
-    main_window.summary_canvas.fig.clear()
-    main_window.summary_canvas.fig.text(0.5, 0.5, "Click 'Spatial Analysis' tab to load", ha='center', va='center', color='gray')
-    main_window.summary_canvas.draw()
-    
-    # Update raw trace plot if currently on that tab
-    current_widget = main_window.analysis_tabs.currentWidget()
-    if current_widget == main_window.raw_trace_tab:
-        plotting.update_raw_trace_plot(main_window, cluster_id)
-    
-    if main_window.spatial_worker:
-        main_window.spatial_worker.add_to_queue(cluster_id, high_priority=False)
-        
-    on_tab_changed(main_window, main_window.analysis_tabs.currentIndex())
-    main_window.status_bar.showMessage("Ready.", 2000)
+    # This single call now handles the debouncing logic.
+    main_window.update_cluster_views(cluster_id)
+
+# In gui/callbacks.py
 
 def on_tab_changed(main_window, index):
     """Handles logic when the user switches between analysis tabs."""
+
+    # --- FIX: Aggressively disconnect the zoom signal to prevent it from firing on hide/resize.
+    # It's safe to call disconnect even if it's not connected.
+    try:
+        main_window.raw_trace_plot.sigXRangeChanged.disconnect(main_window.on_raw_trace_zoom)
+    except (TypeError, RuntimeError):
+        # This can happen if it was already disconnected, which is fine.
+        pass
+
     current_widget = main_window.analysis_tabs.widget(index)
-    
+    cluster_id = main_window._get_selected_cluster_id()
+    if cluster_id is None:
+        return
+
+    # Handle Raw Trace tab
+    if current_widget == main_window.raw_trace_tab:
+        # --- FIX: Reconnect the zoom signal ONLY when this tab is active.
+        main_window.raw_trace_plot.sigXRangeChanged.connect(main_window.on_raw_trace_zoom)
+        main_window.load_raw_trace_data(cluster_id)
+
     # Handle Spatial Analysis tab
-    if current_widget == main_window.summary_tab:
-        cluster_id = main_window._get_selected_cluster_id()
-        if cluster_id is None:
-            return
-        
-        # The plotting function now handles the logic of what to draw.
-        # We just need to call it. This completes the Vision data connection.
+    elif current_widget == main_window.summary_tab:
         plotting.draw_summary_plot(main_window, cluster_id)
-        
-        # If we drew the Vision RF, we don't need the worker. 
-        # If not, the plot function will have used the heavyweight cache.
-        # If that was empty too, we need to queue the worker.
-        if not (main_window.data_manager.vision_stas and cluster_id in main_window.data_manager.vision_stas) and cluster_id not in main_window.data_manager.heavyweight_cache:
-            
+        # The rest of your logic for this tab remains the same...
+        has_vision_ei = main_window.data_manager.vision_eis and (cluster_id + 1) in main_window.data_manager.vision_eis
+        if not has_vision_ei and cluster_id not in main_window.data_manager.heavyweight_cache:
             main_window.status_bar.showMessage(f"Requesting spatial analysis for C{cluster_id}...", 3000)
             main_window.summary_canvas.fig.clear()
             main_window.summary_canvas.fig.text(0.5, 0.5, f"Loading C{cluster_id}...", ha='center', va='center', color='white')
             main_window.summary_canvas.draw()
             QApplication.processEvents()
-            
             if main_window.spatial_worker:
                 main_window.spatial_worker.add_to_queue(cluster_id, high_priority=True)
-    
+
     # Handle STA Analysis tab
     elif current_widget == main_window.sta_tab:
-        cluster_id = main_window._get_selected_cluster_id()
-        if cluster_id is None:
-            return
-        
-        # Use the current STA view or default to RF plot
         view_type = getattr(main_window, 'current_sta_view', 'rf')
         if view_type == "rf":
             plotting.draw_sta_plot(main_window, cluster_id)
         elif view_type == "population_rfs":
-            plotting.draw_population_rfs_plot(main_window)
+            # Pass the selected cluster_id to highlight in the population plot
+            plotting.draw_population_rfs_plot(main_window, selected_cell_id=cluster_id)
         elif view_type == "timecourse":
             plotting.draw_sta_timecourse_plot(main_window, cluster_id)
         elif view_type == "animation":
             plotting.draw_sta_animation_plot(main_window, cluster_id)
-    
-    # Handle Raw Trace tab
-    elif current_widget == main_window.raw_trace_tab:
-        cluster_id = main_window._get_selected_cluster_id()
-        if cluster_id is None:
-            return
-        
-        plotting.update_raw_trace_plot(main_window, cluster_id)
 
 
 def on_spatial_data_ready(main_window, cluster_id, features):
@@ -723,7 +691,7 @@ def on_go_to_time(main_window):
         # Update the plot for the currently selected cluster
         cluster_id = main_window._get_selected_cluster_id()
         if cluster_id is not None:
-            plotting.update_raw_trace_plot(main_window, cluster_id)
+            main_window.load_raw_trace_data(cluster_id)
         
         main_window.status_bar.showMessage(f"Jumped to time {hours:02d}:{minutes:02d}:{seconds:02d}", 2000)
         

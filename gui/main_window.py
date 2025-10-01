@@ -3,14 +3,17 @@ from qtpy.QtWidgets import (
     QPushButton, QSplitter, QStatusBar,
     QHeaderView, QMessageBox, QTabWidget, QTableView, QTreeView, QAbstractItemView, QSlider, QLabel, QMenu, QInputDialog, QStackedWidget, QLineEdit
 )
-from qtpy.QtCore import Qt, QItemSelectionModel
+from qtpy.QtCore import Qt, QItemSelectionModel, QThread, QTimer
 from qtpy.QtGui import QFont, QStandardItemModel, QStandardItem
 import pyqtgraph as pg
+import numpy as np
 import analysis_core
 # Custom GUI Modules
 from gui.widgets import MplCanvas, PandasModel
 import gui.callbacks as callbacks
 import gui.plotting as plotting
+
+from gui.workers import FeatureWorker
 
 # Global pyqtgraph configuration
 pg.setConfigOption('background', '#1f1f1f')
@@ -53,12 +56,24 @@ class MainWindow(QMainWindow):
         self.raw_trace_current_cluster_id = None
         # --- Raw Trace Manual Loading Flag ---
         self._raw_trace_manual_load = False
+        # --- Raw Trace Background Loading ---
+        self.raw_trace_worker_thread = None
+        self.raw_trace_worker = None
+        self.feature_worker_thread = None
 
         # --- UI Setup ---
         self._setup_style()
         self._setup_ui()
         self.central_widget.setEnabled(False)
         self.status_bar.showMessage("Welcome to axolotl. Please load a Kilosort directory to begin.")
+
+        # selection timer for debouncing rapid selections
+        self.selection_timer = QTimer(self)
+        self.selection_timer.setSingleShot(True)
+        self.selection_timer.setInterval(150)  # 150ms delay
+        self.selection_timer.timeout.connect(self._process_selection)
+        self._pending_cluster_id = None
+    
 
     def _setup_style(self):
         """Sets the application's stylesheet."""
@@ -75,6 +90,88 @@ class MainWindow(QMainWindow):
             QTabBar::tab:selected { background: #4282DA; }
             QStatusBar { color: white; }
         """)
+
+# In main_window.py, add these new methods to the MainWindow class.
+# Also, add 'self.feature_worker_thread = None' to the __init__ method.
+# Make sure to add `from gui.workers import FeatureWorker` to your imports.
+
+    # In MainWindow, ensure you have these two methods.
+    # update_cluster_views catches the rapid clicks.
+    def update_cluster_views(self, cluster_id):
+        """
+        Receives a selection event, stores the cluster_id, and restarts the
+        selection timer. This 'debounces' rapid selections.
+        """
+        self._pending_cluster_id = cluster_id
+        self.selection_timer.start()
+
+    # _process_selection runs only after the user pauses.
+    # In gui/main_window.py
+
+    def _process_selection(self):
+        """
+        This method is called by the timer ONLY after the user has stopped
+        scrolling. It performs the actual data loading for the last selected cluster.
+        """
+        cluster_id = self._pending_cluster_id
+        if cluster_id is None:
+            return
+
+        self.status_bar.showMessage(f"Loading data for Cluster ID: {cluster_id}...")
+        
+        cached_features = self.data_manager.get_lightweight_features(cluster_id)
+        if cached_features:
+            self._draw_plots(cluster_id, cached_features)
+            return
+
+        self.waveform_plot.clear()
+        self.isi_plot.clear()
+        self.fr_plot.clear()
+        
+        # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
+        if self.feature_worker_thread and self.feature_worker_thread.isRunning():
+            self.feature_worker_thread.quit()
+            self.feature_worker_thread.wait() # This is the critical addition
+
+        self.feature_worker_thread = QThread()
+        self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
+        self.feature_worker.moveToThread(self.feature_worker_thread)
+        self.feature_worker.features_ready.connect(self.on_features_ready)
+        self.feature_worker.error.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
+        self.feature_worker_thread.started.connect(self.feature_worker.run)
+        self.feature_worker_thread.start()
+
+    def on_features_ready(self, cluster_id, features):
+        """
+        Slot that receives the features from the background worker.
+        """
+        # Cache the newly computed features.
+        self.data_manager.ei_cache[cluster_id] = features
+        
+        # VERY IMPORTANT: Only draw if the returned data is for the currently selected cluster.
+        # This prevents a slow, old request from overwriting a new, quick one.
+        if cluster_id == self._get_selected_cluster_id():
+            self._draw_plots(cluster_id, features)
+
+        self.feature_worker_thread.quit()
+
+    def _draw_plots(self, cluster_id, features):
+        """A single, centralized function to update all plots."""
+        # Update the standard plots.
+        plotting.update_waveform_plot(self, cluster_id, features)
+        plotting.update_isi_plot(self, cluster_id)
+        plotting.update_fr_plot(self, cluster_id)
+
+        # Update the tab-specific plot (Raw Trace, EI, STA).
+        current_widget = self.analysis_tabs.currentWidget()
+        if current_widget == self.raw_trace_tab:
+            self.load_raw_trace_data(cluster_id)
+        elif current_widget == self.summary_tab:
+            plotting.draw_summary_plot(self, cluster_id)
+        elif current_widget == self.sta_tab:
+            self.select_sta_view(self.current_sta_view)
+            
+        self.status_bar.showMessage("Ready.", 2000)
 
     def _setup_ui(self):
         """Initializes and lays out all the UI widgets."""
@@ -578,66 +675,82 @@ class MainWindow(QMainWindow):
         plotting.on_summary_plot_hover(self, event)
         
     def on_raw_trace_zoom(self):
-        """Handle zoom/pan events in the raw trace plot by updating the visualization."""
-        # Prevent recursion
-        if self._raw_trace_updating:
+        """
+        Handles zoom/pan events in the raw trace plot for seamless "infinite scroll".
+
+        This method is connected to the plot's sigXRangeChanged signal. Its primary
+        role is to detect when the user's view approaches the edge of the current
+        in-memory data buffer. When that happens, it calculates a new time window
+        centered on the user's current view and triggers a background worker to
+        load the new data segment. This provides a smooth, uninterrupted data
+        exploration experience without freezing the GUI.
+        """
+        # --- Guard Clauses ---
+        # 1. Prevent recursive calls while a data load is already in progress.
+        # 2. Prevent this auto-load from interfering with manual button clicks (e.g., "Load Next 10s").
+        if self._raw_trace_updating or getattr(self, '_raw_trace_manual_load', False):
             return
-        # If a manual load is in progress, don't override it with auto-loading
-        if getattr(self, '_raw_trace_manual_load', False):
-            return
+
+        # --- Main Logic ---
         self._raw_trace_updating = True
-        
         try:
-            # Only update if we're currently on the raw trace tab
-            if self.analysis_tabs.currentWidget() == self.raw_trace_tab:
-                cluster_id = self._get_selected_cluster_id()
-                if cluster_id is not None:
-                    # Check if we need to load new data based on the visible range
-                    view_range = self.raw_trace_plot.viewRange()
-                    x_range = view_range[0]  # [min_x, max_x] in seconds
-                    
-                    # Define threshold for loading new data (30 seconds from buffer edge)
-                    buffer_threshold = 30.0  # seconds
-                    
-                    # Check if we need to load new data
-                    if (cluster_id != self.raw_trace_current_cluster_id or  # New cluster selected
-                        x_range[0] < (self.raw_trace_buffer_start_time + buffer_threshold) or  # Near start of buffer
-                        x_range[1] > (self.raw_trace_buffer_end_time - buffer_threshold)):  # Near end of buffer
-                    
-                        # Update the current cluster ID
-                        self.raw_trace_current_cluster_id = cluster_id
-                        
-                        # Determine direction of movement to load the next/previous segment
-                        if x_range[1] > (self.raw_trace_buffer_end_time - buffer_threshold):
-                            # Moving forward, load the next segment
-                            buffer_start = self.raw_trace_buffer_end_time
-                            buffer_end = buffer_start + 180  # 3 minutes = 180 seconds
-                        elif x_range[0] < (self.raw_trace_buffer_start_time + buffer_threshold):
-                            # Moving backward, load the previous segment
-                            buffer_end = self.raw_trace_buffer_start_time
-                            buffer_start = max(0, buffer_end - 180)
-                        else:
-                            # New cluster selected or centered view - load centered buffer
-                            center_time = (x_range[0] + x_range[1]) / 2
-                            buffer_duration = 180  # 3 minutes = 180 seconds
-                            buffer_start = max(0, center_time - buffer_duration/2)
-                            buffer_end = buffer_start + buffer_duration
-                        
-                        # Ensure we don't exceed the recording duration
-                        max_duration = self.data_manager.n_samples / self.data_manager.sampling_rate
-                        if buffer_end > max_duration:
-                            buffer_end = max_duration
-                            buffer_start = max(0, buffer_end - 180)
-                        
-                        self.raw_trace_buffer_start_time = buffer_start
-                        self.raw_trace_buffer_end_time = buffer_end
-                        
-                        # Update the plot with the new buffer data
-                        plotting.update_raw_trace_plot(self, cluster_id)
-                    else:
-                        # Just update the display with the existing buffer
-                        plotting.update_raw_trace_plot(self, cluster_id)
+            # Only proceed if the raw trace tab is active and a cluster is selected.
+            if self.analysis_tabs.currentWidget() != self.raw_trace_tab:
+                return
+
+            cluster_id = self._get_selected_cluster_id()
+            if cluster_id is None:
+                return
+
+            # Get the current visible time range from the plot.
+            view_range = self.raw_trace_plot.viewRange()
+            x_min, x_max = view_range[0]
+
+            # --- Define Buffer and Thresholds ---
+            # The buffer size was reduced from 3min to 1min for performance.
+            # The threshold determines how close to the edge we get before loading more data.
+            buffer_duration = 60.0  # seconds
+            buffer_threshold = 30.0  # seconds
+
+            # --- Determine if a New Data Load is Required ---
+            load_new_data = False
+            max_time = self.data_manager.n_samples / self.data_manager.sampling_rate
+
+            # Condition 1: The selected cluster has changed.
+            if cluster_id != self.raw_trace_current_cluster_id:
+                load_new_data = True
+            # Condition 2: Panning forward, nearing the end of the buffer (and not at the end of the recording).
+            elif x_max > (self.raw_trace_buffer_end_time - buffer_threshold) and self.raw_trace_buffer_end_time < max_time:
+                load_new_data = True
+            # Condition 3: Panning backward, nearing the start of the buffer (and not at the beginning of the recording).
+            elif x_min < (self.raw_trace_buffer_start_time + buffer_threshold) and self.raw_trace_buffer_start_time > 0:
+                load_new_data = True
+
+            # --- Trigger Background Data Load ---
+            if load_new_data:
+                # Center the new buffer on the user's current view for a seamless transition.
+                center_time = (x_min + x_max) / 2.0
+
+                # Calculate the new buffer window.
+                new_start_time = max(0, center_time - (buffer_duration / 2.0))
+                new_end_time = new_start_time + buffer_duration
+
+                # Clamp the window to the recording's boundaries.
+                if new_end_time > max_time:
+                    new_end_time = max_time
+                    new_start_time = max(0, new_end_time - buffer_duration)
+
+                # Update the main window's state to reflect the new buffer.
+                self.raw_trace_buffer_start_time = new_start_time
+                self.raw_trace_buffer_end_time = new_end_time
+                self.raw_trace_current_cluster_id = cluster_id
+
+                # **THE FIX**: Instead of calling a blocking plot function,
+                # this now correctly calls the background worker loader.
+                self.load_raw_trace_data(cluster_id)
+
         finally:
+            # IMPORTANT: Always release the lock to allow future updates.
             self._raw_trace_updating = False
             
     def load_next_10s_data(self):
@@ -707,6 +820,189 @@ class MainWindow(QMainWindow):
         from qtpy.QtCore import QTimer
         QTimer.singleShot(100, lambda: setattr(self, '_raw_trace_manual_load', False))
         
+    def load_raw_trace_data(self, cluster_id):
+        """
+        Loads the initial raw trace view for a selected cluster.
+
+        This follows a simple, fast-loading logic:
+        1. Instantly find the first spike time using an optimized method.
+        2. Define a 30-second window starting 5 seconds before that spike.
+        3. Launch a background worker to load only that window's data.
+        """
+        if self.data_manager.raw_data_memmap is None:
+            self.status_bar.showMessage("No raw data file loaded.")
+            return
+
+        # --- Simplified Initial Window Calculation ---
+        # 1. Use the new, optimized function to get the first spike time.
+        first_spike_time = self.data_manager.get_first_spike_time(cluster_id)
+        
+        if first_spike_time is None:
+            # If cluster has no spikes, default to the start of the recording.
+            start_time = 0.0
+        else:
+            # Start the view 5 seconds before the first spike to give context.
+            start_time = max(0, first_spike_time - 5.0)
+            
+        # 2. Define a fixed 30-second window to load.
+        end_time = start_time + 30.0
+
+        # Clamp to the end of the recording.
+        max_duration = self.data_manager.n_samples / self.data_manager.sampling_rate
+        if end_time > max_duration:
+            end_time = max_duration
+
+        # 3. Update the buffer state. This is critical for the zoom/pan and next/prev buttons to work correctly later.
+        self.raw_trace_buffer_start_time = start_time
+        self.raw_trace_buffer_end_time = end_time
+        self.raw_trace_current_cluster_id = cluster_id
+
+        # --- Launch Background Worker ---
+        # Stop any existing worker before starting a new one.
+        if self.raw_trace_worker_thread and self.raw_trace_worker_thread.isRunning():
+            self.raw_trace_worker_thread.quit()
+            self.raw_trace_worker_thread.wait()
+
+        # Get the channel info needed for the worker.
+        lightweight_features = self.data_manager.get_lightweight_features(cluster_id)
+        if not lightweight_features:
+            return
+        p2p = (lightweight_features['median_ei'].max(axis=1) - 
+               lightweight_features['median_ei'].min(axis=1))
+        dom_chan = np.argmax(p2p)
+        nearest_channels = self.data_manager.get_nearest_channels(dom_chan, n_channels=3)
+
+        # Create and start the new worker with our simple, fixed time window.
+        from gui.workers import RawTraceWorker
+        self.raw_trace_worker = RawTraceWorker(
+            self.data_manager, cluster_id, nearest_channels, start_time, end_time
+        )
+        self.raw_trace_worker_thread = QThread()
+        self.raw_trace_worker.moveToThread(self.raw_trace_worker_thread)
+        self.raw_trace_worker.data_loaded.connect(self.on_raw_trace_data_loaded)
+        self.raw_trace_worker.error.connect(self.on_raw_trace_data_error)
+        self.raw_trace_worker_thread.started.connect(self.raw_trace_worker.run)
+        self.raw_trace_worker_thread.start()
+        
+        self.status_bar.showMessage(f"Loading initial 30s raw trace for cluster {cluster_id}...")
+    
+    # In gui/main_window.py
+
+    # In gui/main_window.py
+
+    def on_raw_trace_data_loaded(self, cluster_id, raw_trace_data, start_time, end_time):
+        """
+        Called when raw trace data is loaded. Plots the data efficiently with all visual corrections.
+        """
+        try:
+            # Basic setup: get features, determine channels, and calculate offsets
+            lightweight_features = self.data_manager.get_lightweight_features(cluster_id)
+            if not lightweight_features:
+                self.status_bar.showMessage(f"Could not retrieve features for cluster {cluster_id}")
+                return
+
+            median_ei = lightweight_features['median_ei']
+            if median_ei.size == 0 or len(median_ei.shape) < 2:
+                self.status_bar.showMessage(f"Invalid data for cluster {cluster_id}")
+                return
+
+            p2p = median_ei.max(axis=1) - median_ei.min(axis=1)
+            dom_chan = np.argmax(p2p)
+            nearest_channels = self.data_manager.get_nearest_channels(dom_chan, n_channels=3)
+            
+            time_axis = np.linspace(start_time, end_time, raw_trace_data.shape[1]) if raw_trace_data.shape[1] > 0 else np.array([])
+            
+            vertical_offset = max(np.max(np.abs(raw_trace_data)), 1) * 2.0 if raw_trace_data.size > 0 else 100
+
+            # Clear and prepare the plot
+            self.raw_trace_plot.clear()
+            self.raw_trace_plot.setTitle(f"Raw Traces for Cluster {cluster_id} - Dominant: {dom_chan}")
+            self.raw_trace_plot.setLabel('bottom', 'Time (s)')
+            self.raw_trace_plot.setLabel('left', 'Amplitude (µV)')
+
+            # Plot the raw traces for the 3 channels
+            for i, (chan_idx, trace) in enumerate(zip(nearest_channels, raw_trace_data)):
+                offset_trace = trace + i * vertical_offset
+                pen_color = (150, 150, 150, 150) if chan_idx == dom_chan else (120, 120, 150, 100)
+                self.raw_trace_plot.plot(time_axis, offset_trace, pen=pg.mkPen(color=pen_color, width=1))
+
+            # Get spike times within the current window
+            all_spikes = self.data_manager.get_cluster_spikes_in_window(cluster_id, start_time, end_time)
+            if len(all_spikes) > 0:
+                window_spikes_sec = all_spikes / self.data_manager.sampling_rate
+                visible_range = self.raw_trace_plot.viewRange()[0]
+                visible_duration = visible_range[1] - visible_range[0]
+
+                try:
+                    dom_idx_in_list = nearest_channels.index(dom_chan)
+                except ValueError:
+                    dom_idx_in_list = 0 
+            
+                # If zoomed in, plot correctly aligned templates
+                if visible_duration < 0.1:
+                    template_waveform = median_ei[dom_chan]
+                    template_len = len(template_waveform)
+                    
+                    trough_idx = np.argmin(template_waveform)
+                    time_to_trough = trough_idx / self.data_manager.sampling_rate
+                    
+                    # --- FIX: Calculate baseline offset to align template vertically ---
+                    dominant_trace = raw_trace_data[dom_idx_in_list]
+                    baseline_offset = np.median(dominant_trace)
+                    
+                    all_template_points = np.empty((len(window_spikes_sec) * (template_len + 1), 2))
+                    
+                    for i, spike_time in enumerate(window_spikes_sec):
+                        start_idx = i * (template_len + 1)
+                        end_idx = start_idx + template_len
+                        
+                        start_time_template = spike_time - time_to_trough
+                        end_time_template = start_time_template + (template_len - 1) / self.data_manager.sampling_rate
+                        all_template_points[start_idx:end_idx, 0] = np.linspace(start_time_template, end_time_template, template_len)
+                        
+                        # Apply both the baseline and vertical offsets to the template's Y-values
+                        all_template_points[start_idx:end_idx, 1] = template_waveform + baseline_offset + (dom_idx_in_list * vertical_offset)
+                        all_template_points[end_idx] = (np.nan, np.nan)
+                    
+                    self.raw_trace_plot.plot(all_template_points[:, 0], all_template_points[:, 1], pen=pg.mkPen('#FFA500', width=2))
+
+                # If zoomed out, plot full-height vertical markers
+                else:
+                    view_box = self.raw_trace_plot.getViewBox()
+                    y_range = view_box.viewRange()[1]
+                    y_min, y_max = y_range[0], y_range[1]
+                    line_points = np.empty((len(window_spikes_sec) * 3, 2))
+
+                    for i, spike_time in enumerate(window_spikes_sec):
+                        idx = i * 3
+                        line_points[idx] = (spike_time, y_min)
+                        line_points[idx + 1] = (spike_time, y_max)
+                        line_points[idx + 2] = (np.nan, np.nan)
+                    
+                    self.raw_trace_plot.plot(line_points[:, 0], line_points[:, 1], pen=pg.mkPen('#FFFF00', width=1))
+
+        except Exception as e:
+            self.status_bar.showMessage(f"Error plotting raw trace: {str(e)}")
+        finally:
+            self.status_bar.showMessage(f"Raw trace loaded for cluster {cluster_id}")
+            if self.raw_trace_worker_thread:
+                self.raw_trace_worker_thread.quit()
+                self.raw_trace_worker_thread.wait()
+                self.raw_trace_worker_thread = None
+                self.raw_trace_worker = None
+
+    def on_raw_trace_data_error(self, error_msg):
+        """
+        Called when raw trace data loading fails.
+        """
+        self.status_bar.showMessage(error_msg)
+        # Clean up the thread
+        if self.raw_trace_worker_thread:
+            self.raw_trace_worker_thread.quit()
+            self.raw_trace_worker_thread.wait()
+            self.raw_trace_worker_thread = None
+            self.raw_trace_worker = None
+    
     def load_classification_file(self):
         callbacks.load_classification_file(self)
         
@@ -741,30 +1037,6 @@ class MainWindow(QMainWindow):
             self.main_splitter.setSizes([35, total_width - 35])
             self.sidebar_collapsed = True
 
-    def update_ei_frame_manual(self, frame_index):
-        """Updates the EI visualization to a specific frame manually."""
-        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
-            # Stop any running animation
-            if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
-                self.ei_animation_timer.stop()
-            
-            # Update the frame index
-            self.current_frame = frame_index
-            
-            # Update the label
-            self.ei_frame_label.setText(f"Frame: {frame_index+1}/{self.n_frames}")
-            
-            # Update the EI canvas with the new frame
-            self.summary_canvas.fig.clear()
-            from gui import plotting
-            plotting.draw_vision_ei_frame(
-                self, 
-                self.current_ei_data[:, frame_index], 
-                frame_index, 
-                self.n_frames
-            )
-            self.summary_canvas.draw()
-
     def start_ei_animation(self):
         """Start the EI animation."""
         if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
@@ -783,14 +1055,32 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
             self.ei_animation_timer.stop()
 
+    def start_ei_animation(self):
+        """Start the EI animation, ensuring it is initialized first."""
+        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
+            
+            # FIX: Initialize the current_frame if it doesn't exist
+            if not hasattr(self, 'current_frame'):
+                self.current_frame = 0
+            
+            # If timer doesn't exist, create it
+            if self.ei_animation_timer is None:
+                from qtpy.QtCore import QTimer
+                self.ei_animation_timer = QTimer()
+                self.ei_animation_timer.timeout.connect(self.update_ei_frame)
+            
+            # Start the timer
+            if not self.ei_animation_timer.isActive():
+                self.ei_animation_timer.start(100)  # 100ms per frame (10 fps)
+
+    def pause_ei_animation(self):
+        """Pause the EI animation."""
+        if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
+            self.ei_animation_timer.stop()
+
     def prev_ei_frame(self):
         """Go to the previous frame in the EI animation."""
         if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
-            # Stop any running animation
-            if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
-                self.ei_animation_timer.stop()
-            
-            # Calculate previous frame index with wrap-around
             self.current_frame = (self.current_frame - 1) % self.n_frames
             self.ei_frame_slider.setValue(self.current_frame)
             self.update_ei_frame_manual(self.current_frame)
@@ -798,24 +1088,43 @@ class MainWindow(QMainWindow):
     def next_ei_frame(self):
         """Go to the next frame in the EI animation."""
         if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
-            # Stop any running animation
-            if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
-                self.ei_animation_timer.stop()
-            
-            # Calculate next frame index with wrap-around
             self.current_frame = (self.current_frame + 1) % self.n_frames
             self.ei_frame_slider.setValue(self.current_frame)
             self.update_ei_frame_manual(self.current_frame)
 
+    def update_ei_frame_manual(self, frame_index, stop_animation=True):
+        """Updates the EI visualization to a specific frame, for manual control."""
+        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
+            if stop_animation and hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
+                self.ei_animation_timer.stop()
+            
+            self.current_frame = frame_index
+            self.ei_frame_label.setText(f"Frame: {frame_index+1}/{self.n_frames}")
+            
+            from gui import plotting
+            plotting.draw_vision_ei_frame(
+                self, 
+                self.current_ei_data[:, frame_index], 
+                frame_index, 
+                self.n_frames
+            )
+            # self.summary_canvas.draw() is called inside draw_vision_ei_frame
+
     def update_ei_frame(self):
-        """Updates the EI visualization to the next frame in the animation."""
+        """Updates the EI visualization to the next frame for automatic animation."""
+        if not hasattr(self, 'current_ei_data') or self.current_ei_data is None:
+            self.pause_ei_animation()
+            return
+            
         if self.current_frame >= self.n_frames - 1:
             self.current_frame = 0
         else:
             self.current_frame += 1
         
-        self.ei_frame_slider.setValue(self.current_frame)
-        self.update_ei_frame_manual(self.current_frame)
+        # FIX: Block signals, update slider, then unblock to prevent feedback loop
+        self.ei_frame_slider.blockSignals(True); self.ei_frame_slider.setValue(self.current_frame); self.ei_frame_slider.blockSignals(False)
+        
+        self.update_ei_frame_manual(self.current_frame, stop_animation=False)
 
     def closeEvent(self, event):
         """Handles the window close event."""
@@ -829,4 +1138,9 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         callbacks.stop_worker(self)
+        # Stop any running raw trace worker
+        if self.raw_trace_worker_thread and self.raw_trace_worker_thread.isRunning():
+            self.raw_trace_worker.wait()
+            self.raw_trace_worker_thread.quit()
+            self.raw_trace_worker_thread.wait()
         event.accept()

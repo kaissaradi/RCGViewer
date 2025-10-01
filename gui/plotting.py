@@ -99,70 +99,97 @@ def update_fr_plot(main_window, cluster_id):
     main_window.fr_plot.setLabel('left', 'Firing Rate (Hz)')
 
 def draw_vision_ei_animation(main_window, cluster_id):
-    """Draws an animated visualization of the Vision EI."""
+    """Draws an animated visualization of the Vision EI, starting with a peak summary frame."""
     vision_cluster_id = cluster_id + 1
     if not main_window.data_manager.vision_eis or vision_cluster_id not in main_window.data_manager.vision_eis:
         main_window.summary_canvas.fig.clear()
         main_window.summary_canvas.fig.text(0.5, 0.5, "No Vision EI data available", ha='center', va='center', color='gray')
         main_window.summary_canvas.draw()
-        # Disable controls if no data
         main_window.ei_frame_slider.setEnabled(False)
         return
+
     ei_data = main_window.data_manager.vision_eis[vision_cluster_id].ei
     main_window.current_ei_data = ei_data
     main_window.current_ei_cluster_id = cluster_id
     main_window.n_frames = ei_data.shape[1]
     
-    # Find the peak frame (frame with maximum absolute amplitude)
-    frame_energies = np.max(np.abs(ei_data), axis=0)  # Max amplitude for each frame
-    peak_frame_index = np.argmax(frame_energies)
-    main_window.current_frame = peak_frame_index
-
-    # Update the slider properties
+    # --- CHANGE: Create and draw the peak summary frame initially ---
+    summary_frame_data = _create_peak_summary_frame(ei_data)
+    
+    # Update slider properties but don't set a value, as the summary is not a real frame
     main_window.ei_frame_slider.setMinimum(0)
     main_window.ei_frame_slider.setMaximum(main_window.n_frames - 1)
-    main_window.ei_frame_slider.setValue(peak_frame_index)
-    main_window.ei_frame_label.setText(f"Frame: {peak_frame_index + 1}/{main_window.n_frames}")
+    main_window.ei_frame_slider.setValue(0) # Default slider to start
+    main_window.ei_frame_label.setText(f"Frame: Peak Summary")
     main_window.ei_frame_slider.setEnabled(True)
     
-    # Initially display the peak frame instead of auto-playing
-    draw_vision_ei_frame(main_window, ei_data[:, peak_frame_index], peak_frame_index, main_window.n_frames)
+    # Draw the summary frame, passing a special index (-1) to identify it
+    draw_vision_ei_frame(main_window, summary_frame_data, -1, main_window.n_frames)
 
 def draw_vision_ei_frame(main_window, frame_data, frame_index, total_frames):
-    """Draws a single frame of the Vision EI animation."""
-    # Calculate size based on amplitude
-    size_data = np.abs(frame_data)
+    """Draws a single EI frame with a fixed color scale and quadratic dot scaling to reduce noise."""
+    full_ei_data = main_window.current_ei_data
+    vmax_global = np.max(np.abs(full_ei_data))
+    vmin_global = -vmax_global
     
-    # Scale the sizes to make them more visible (user can adjust this)
-    size_multiplier = 50  # This could be made adjustable by user later
+    # --- FINAL FIX: Quadratic Size Scaling ---
+    amplitudes = np.abs(frame_data)
     
+    # Using a power > 1 (e.g., 2) suppresses small values, effectively hiding noise
+    # while keeping larger, significant channels visible.
+    sizes = 5 + (amplitudes / vmax_global) ** 2 * 250
+    
+    # --- Non-Linear Color Scaling (from previous step) ---
+    with np.errstate(divide='ignore', invalid='ignore'):
+        scaled_colors = np.sign(frame_data) * np.sqrt(np.abs(frame_data) / vmax_global)
+        scaled_colors = np.nan_to_num(scaled_colors)
+
+    # --- Plotting ---
     main_window.summary_canvas.fig.clear()
     ax = main_window.summary_canvas.fig.add_subplot(111)
     ax.set_facecolor('#1f1f1f')
+
     scatter = ax.scatter(
         main_window.data_manager.channel_positions[:, 0],
         main_window.data_manager.channel_positions[:, 1],
-        c=frame_data, 
-        s=size_data * size_multiplier, 
+        c=scaled_colors, 
+        s=sizes,
         cmap='RdBu_r',
         edgecolor='white', 
         linewidth=0.5,
-        vmin=-np.max(np.abs(frame_data)),  # Normalize colors across the frame
-        vmax=np.max(np.abs(frame_data))
+        vmin=-1,
+        vmax=1
     )
-    ax.set_title(f"Vision EI - Frame {frame_index + 1}/{total_frames}")
+
+    if frame_index == -1:
+        ax.set_title("Vision EI - Peak Amplitude Summary")
+    else:
+        ax.set_title(f"Vision EI - Frame {frame_index + 1}/{total_frames}")
     
-    # Add a colorbar for reference
-    cbar = main_window.summary_canvas.fig.colorbar(scatter, ax=ax)
-    cbar.set_label('Amplitude', color='white')
-    # Update colorbar text color to match theme
+    norm = plt.Normalize(vmin=vmin_global, vmax=vmax_global)
+    sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=norm)
+    sm.set_array([])
+    cbar = main_window.summary_canvas.fig.colorbar(sm, ax=ax)
+    
+    cbar.set_label('Amplitude (µV)', color='white')
     cbar.ax.yaxis.set_tick_params(color='white')
     cbar.outline.set_edgecolor('#444444')
-    plt = main_window.summary_canvas.fig
     for tick_label in cbar.ax.yaxis.get_ticklabels():
         tick_label.set_color('white')
     
     main_window.summary_canvas.draw()
+
+# Note: The update_raw_trace_plot function has been replaced by background loading
+# The functionality is now handled by MainWindow.load_raw_trace_data and related worker
+# This stub is maintained for compatibility but does nothing
+def update_raw_trace_plot(main_window, cluster_id):
+    """
+    Draw the raw trace plot with the nearest 3 channels and spike templates overlaid.
+    This function has been replaced by background loading for improved performance.
+    """
+    # Background loading is now handled by MainWindow.load_raw_trace_data
+    # This stub is maintained for compatibility but does nothing
+    pass
 
 def update_ei_frame(main_window):
     """Updates the EI visualization to the next frame in the animation."""
@@ -229,7 +256,7 @@ def draw_sta_plot(main_window, cluster_id):
 
 def draw_population_rfs_plot(main_window, selected_cell_id=None):
     """Draws the population receptive field plot showing all cell RFs."""
-    print(f"--- 2. DEBUG (Plotting): Received selected_cell_id = {selected_cell_id}. Passing to analysis_core. ---")
+    print(f"--- 2. (Plotting): Received selected_cell_id = {selected_cell_id}. Passing to analysis_core. ---")
     # MODIFIED: This function now accepts 'selected_cell_id'
     has_vision_params = main_window.data_manager.vision_params
     
@@ -325,181 +352,21 @@ def stop_sta_animation(main_window):
     if hasattr(main_window, 'sta_animation_timer') and main_window.sta_animation_timer and main_window.sta_animation_timer.isActive():
         main_window.sta_animation_timer.stop()
 
-
-def update_raw_trace_plot(main_window, cluster_id):
+def _create_peak_summary_frame(ei_data):
     """
-    Draw the raw trace plot with the nearest channels and spike templates overlaid.
+    Creates a composite frame showing the peak absolute amplitude for each channel.
+    
+    Args:
+        ei_data (np.ndarray): The full EI data (n_channels, n_frames).
+        
+    Returns:
+        np.ndarray: A 1D array (n_channels,) with the peak value for each channel.
     """
-    # Guard against recursive updates
-    if getattr(main_window, '_raw_trace_updating', False):
-        return
-
-    main_window._raw_trace_updating = True
-    try:
-        if main_window.data_manager.raw_data_memmap is None:
-            main_window.raw_trace_plot.clear()
-            main_window.raw_trace_plot.setTitle("Raw Trace View - No raw data file loaded")
-            return
-
-        # Get the dominant channel for the cluster
-        lightweight_features = main_window.data_manager.get_lightweight_features(cluster_id)
-        if not lightweight_features:
-            main_window.raw_trace_plot.clear()
-            main_window.raw_trace_plot.setTitle(f"Raw Trace View - No data available for cluster {cluster_id}")
-            return
-
-        # Find the dominant channel (the one with the largest peak-to-peak amplitude)
-        median_ei = lightweight_features['median_ei']
-        if median_ei.size == 0 or len(median_ei.shape) < 2:
-            main_window.raw_trace_plot.clear()
-            main_window.raw_trace_plot.setTitle(f"Raw Trace View - Invalid data for cluster {cluster_id}")
-            return
-
-        p2p = median_ei.max(axis=1) - median_ei.min(axis=1)
-        dom_chan = np.argmax(p2p)
-
-        # Get the nearest 3 channels (dominant channel and its 2 closest neighbors)
-        nearest_channels = main_window.data_manager.get_nearest_channels(dom_chan, n_channels=3)
-        
-        # Determine the time range to plot (either the current view or the buffer range)
-        if (hasattr(main_window, 'raw_trace_buffer_start_time') and 
-            main_window.raw_trace_buffer_start_time != main_window.raw_trace_buffer_end_time):
-            # Use the buffered range if it exists
-            start_time = main_window.raw_trace_buffer_start_time
-            end_time = main_window.raw_trace_buffer_end_time
-        else:
-            # Otherwise, determine from the visible range
-            try:
-                view_range = main_window.raw_trace_plot.viewRange()
-                x_range = view_range[0]  # [min_x, max_x] in seconds
-            except:
-                x_range = (0, 1)  # Default if viewRange fails
-            
-            # If plot is not initialized yet, try to navigate to the first spike for the cluster
-            if x_range[0] == 0 and x_range[1] == 1:
-                # Get spikes for the cluster and find the first one
-                cluster_spikes = main_window.data_manager.get_cluster_spikes(cluster_id)
-                if len(cluster_spikes) > 0:
-                    # Find the time of the first spike in seconds
-                    first_spike_sample = cluster_spikes[0]
-                    first_spike_time = first_spike_sample / main_window.data_manager.sampling_rate
-                    
-                    # Show a 5-second window starting from the first spike
-                    start_time = first_spike_time
-                    end_time = start_time + 5.0
-                else:
-                    # If no spikes, default to first 10 seconds
-                    start_time = 0
-                    end_time = 10
-            else:
-                start_time = x_range[0]
-                end_time = x_range[1]
-        
-        # Convert time range from seconds to samples
-        start_sample = int(start_time * main_window.data_manager.sampling_rate)
-        end_sample = int(end_time * main_window.data_manager.sampling_rate)
-        
-        # Ensure we stay within bounds
-        start_sample = max(0, start_sample)
-        end_sample = min(main_window.data_manager.n_samples, end_sample)
-        
-        if start_sample >= end_sample:
-            main_window.raw_trace_plot.clear()
-            main_window.raw_trace_plot.setTitle(f"Raw Trace View - Invalid time range for cluster {cluster_id}")
-            return
-        
-        # Get the raw trace data for the nearest channels
-        raw_trace_data = main_window.data_manager.get_raw_trace_snippet(
-            nearest_channels, start_sample, end_sample
-        )
-        
-        if raw_trace_data is None or raw_trace_data.size == 0 or len(raw_trace_data.shape) < 2:
-            main_window.raw_trace_plot.clear()
-            main_window.raw_trace_plot.setTitle(f"Raw Trace View - No data available in time range for cluster {cluster_id}")
-            return
-
-        # Clear the plot
-        main_window.raw_trace_plot.clear()
-        
-        # Set up time axis (convert samples to seconds)
-        if raw_trace_data.shape[1] > 0:  # Make sure we have time points
-            time_axis = np.linspace(
-                start_sample / main_window.data_manager.sampling_rate,
-                end_sample / main_window.data_manager.sampling_rate,
-                raw_trace_data.shape[1]
-            )
-        else:
-            # If no data points, just return with a message
-            main_window.raw_trace_plot.clear()
-            main_window.raw_trace_plot.setTitle(f"Raw Trace View - No time points to display for cluster {cluster_id}")
-            return
-        
-        # Define vertical offset for each channel so they don't overlap
-        if raw_trace_data.size > 0:
-            vertical_offset = max(np.max(np.abs(raw_trace_data)), 1) * 2.0  # Space channels apart more for 3 channels
-        else:
-            vertical_offset = 100  # Default offset if no data
-        
-        # Plot each of the 3 channels with a vertical offset, ensuring dominant channel is in the center
-        for i, (chan_idx, trace) in enumerate(zip(nearest_channels, raw_trace_data)):
-            # Apply vertical offset based on channel index
-            offset_trace = trace + i * vertical_offset
-            
-            # Apply refined visual styling
-            if chan_idx == dom_chan:
-                # Raw trace for the dominant channel: thinner, slightly less transparent
-                pen = pg.mkPen(color=(150, 150, 150, 150), width=1)  # Transparent grey-blue for dominant channel
-            else:
-                # Raw trace for neighbor channels: thinner, more transparent
-                pen = pg.mkPen(color=(120, 120, 150, 100), width=1)  # More transparent grey-blue
-            
-            main_window.raw_trace_plot.plot(time_axis, offset_trace, pen=pen)
-
-        # Add title with cluster info
-        main_window.raw_trace_plot.setTitle(f"Raw Traces for Cluster {cluster_id} - 3 channels: dominant {dom_chan} with neighbors")
-        main_window.raw_trace_plot.setLabel('bottom', 'Time (s)')
-        main_window.raw_trace_plot.setLabel('left', 'Amplitude (µV)')
-        
-        # Get spike times for the selected cluster that fall within the current time window
-        all_spikes = main_window.data_manager.get_cluster_spikes(cluster_id)
-        if len(all_spikes) > 0:
-            window_spikes = all_spikes[(all_spikes >= start_sample) & (all_spikes <= end_sample)]
-            window_spikes_sec = window_spikes / main_window.data_manager.sampling_rate
-            
-            # Determine zoom level to decide whether to show templates or just spike lines
-            visible_duration = end_time - start_time
-            
-            # If zoomed in (showing less than 0.05 seconds), show the actual template
-            if visible_duration < 0.05 and len(window_spikes) > 0:
-                # Only process templates if we have valid median_ei data
-                template_len = len(median_ei[dom_chan])
-                if template_len > 0:
-                    for spike_time_sec in window_spikes_sec:
-                        template_duration = template_len / main_window.data_manager.sampling_rate
-                        
-                        # Create time axis for the template centered on the spike time
-                        template_time = np.linspace(
-                            spike_time_sec - template_duration/2,
-                            spike_time_sec + template_duration/2,
-                            template_len
-                        )
-                        
-                        # Find which position corresponds to the dominant channel in our nearest channels list
-                        try:
-                            dom_idx_in_list = nearest_channels.index(dom_chan)
-                        except ValueError:
-                            # If dom_chan is not in nearest_channels, default to position 0
-                            dom_idx_in_list = 0
-                            
-                        offset_template = median_ei[dom_chan] + dom_idx_in_list * vertical_offset
-                        
-                        # Draw the template with refined styling
-                        main_window.raw_trace_plot.plot(template_time, offset_template, 
-                                                      pen=pg.mkPen(color='#FFA500', width=2.5))  # Orange for templates
-            else:
-                # If zoomed out, just show vertical lines at spike times
-                for spike_time_sec in window_spikes_sec:
-                    main_window.raw_trace_plot.addLine(x=spike_time_sec, 
-                                                     pen=pg.mkPen('#FFFF00', width=1, style=Qt.PenStyle.DotLine))  # Thin, dotted bright yellow lines for spike markers
-    finally:
-        main_window._raw_trace_updating = False
+    # Find the index of the max absolute value along the time axis (axis=1) for each channel
+    peak_indices = np.argmax(np.abs(ei_data), axis=1)
+    
+    # Use these indices to pull the corresponding peak value (maintaining the sign) from the data
+    # This uses advanced numpy indexing to get ei_data[channel, peak_index_for_that_channel]
+    summary_frame = ei_data[np.arange(ei_data.shape[0]), peak_indices]
+    
+    return summary_frame
