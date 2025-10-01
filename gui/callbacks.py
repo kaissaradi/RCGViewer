@@ -9,14 +9,16 @@ from gui.workers import RefinementWorker, SpatialWorker
 from gui.widgets import PandasModel
 import gui.plotting as plotting
 
-def load_directory(main_window):
+def load_directory(main_window, kilosort_dir=None, dat_file=None):
     """Handles the logic for loading a Kilosort directory."""
     # Set default directory: use /home/localadmin/Documents/Development/data/sorted if it exists, otherwise home
     default_dir = Path("/home/localadmin/Documents/Development/data/sorted")
     if not default_dir.exists():
         default_dir = Path.home()
-    
-    ks_dir_name = QFileDialog.getExistingDirectory(main_window, "Select Kilosort Output Directory", str(default_dir))
+    if kilosort_dir is None:
+        ks_dir_name = QFileDialog.getExistingDirectory(main_window, "Select Kilosort Output Directory", str(default_dir))
+    else:
+        ks_dir_name = kilosort_dir
     if not ks_dir_name:
         return
         
@@ -34,7 +36,8 @@ def load_directory(main_window):
     main_window.status_bar.showMessage("Kilosort files loaded. Please select the raw data file.")
     QApplication.processEvents()
     
-    dat_file, _ = QFileDialog.getOpenFileName(main_window, "Select Raw Data File (.dat or .bin)",
+    if dat_file is None:
+        dat_file, _ = QFileDialog.getOpenFileName(main_window, "Select Raw Data File (.dat or .bin)",
                                               str(main_window.data_manager.dat_path_suggestion.parent),
                                               "Binary Files (*.dat *.bin)")
     if not dat_file:

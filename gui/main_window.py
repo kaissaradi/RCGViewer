@@ -1,3 +1,4 @@
+import os
 from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
@@ -20,7 +21,7 @@ pg.setConfigOption('background', '#1f1f1f')
 pg.setConfigOption('foreground', 'd')
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, default_kilosort_dir=None, default_dat_file=None):
         super().__init__()
         self.setWindowTitle("axolotl")
         self.setGeometry(50, 50, 1800, 1000)
@@ -74,6 +75,10 @@ class MainWindow(QMainWindow):
         self.selection_timer.timeout.connect(self._process_selection)
         self._pending_cluster_id = None
     
+        # Auto-load if default paths are provided
+        if default_kilosort_dir and os.path.isdir(default_kilosort_dir):
+            self.load_directory(default_kilosort_dir, default_dat_file)
+
 
     def _setup_style(self):
         """Sets the application's stylesheet."""
@@ -506,8 +511,8 @@ class MainWindow(QMainWindow):
         self.table_view.selectionModel().selectionChanged.connect(self.on_view_selection_changed)
         
     # --- Methods to bridge UI signals to callback functions ---
-    def load_directory(self):
-        callbacks.load_directory(self)
+    def load_directory(self, kilosort_dir=None, dat_file=None):
+        callbacks.load_directory(self, kilosort_dir, dat_file)
 
     def load_vision_directory(self):
         callbacks.load_vision_directory(self)
