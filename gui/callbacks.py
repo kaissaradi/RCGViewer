@@ -69,17 +69,20 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     # Find any .ei file and check if its siblings (.sta, .params) exist.
     for ei_file in vision_dir.glob('*.ei'):
         base_name = ei_file.stem  # Gets the filename without the extension
+        dataset_name = base_name
+        print(f"[DEBUG] Found EI file with base name: '{dataset_name}'")
+        break  # Use the first EI file found
         
         # Check if the corresponding .sta and .params files exist
-        if (vision_dir / f'{base_name}.sta').exists() and \
-           (vision_dir / f'{base_name}.params').exists():
+        # if (vision_dir / f'{base_name}.sta').exists() and \
+        #    (vision_dir / f'{base_name}.params').exists():
             
-            dataset_name = base_name
-            print(f"[DEBUG] Found complete Vision file set with base name: '{dataset_name}'")
-            break  # Found a set, no need to check further
+        #     dataset_name = base_name
+        #     print(f"[DEBUG] Found complete Vision file set with base name: '{dataset_name}'")
+        #     break  # Found a set, no need to check further
 
     if dataset_name:
-        main_window.status_bar.showMessage(f"Found Vision files ('{dataset_name}') in directory - loading automatically...")
+        main_window.status_bar.showMessage(f"Found Vision EI file ('{dataset_name}') in directory - loading automatically...")
         QApplication.processEvents()
         
         # Call the updated method with the discovered dataset name
