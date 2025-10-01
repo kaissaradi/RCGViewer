@@ -277,9 +277,11 @@ def compute_spatial_features(ei, channel_positions, sampling_rate=20000, pre_sam
 # Plotting Functions
 # =============================================================================
 
+# In analysis_core.py
+
 def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_rate=20000, pre_samples=20):
     """
-    Creates a rich, multi-panel EI visualization.
+    Creates a rich, multi-panel EI visualization with thresholding for clarity.
     """
     fig.clear()
     peak_negative_smooth = spatial_features['peak_negative_smooth']
@@ -297,10 +299,25 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
     v_min, v_max = np.percentile(peak_negative_smooth, [5, 95])
     contour_fill = ax1.contourf(grid_x, grid_y, grid_z, levels=20, cmap='RdBu_r', alpha=0.7, vmin=v_min, vmax=v_max)
     ax1.contour(grid_x, grid_y, grid_z, levels=20, colors='white', linewidths=0.5, alpha=0.4)
-    max_ptp = ptp_amps.max()
-    scaled_sizes = 10 + (ptp_amps / max_ptp) * 250 if max_ptp > 0 else np.full_like(ptp_amps, 10)
-    ax1.scatter(channel_positions[:, 0], channel_positions[:, 1], s=scaled_sizes, c=peak_negative_smooth,
+    
+    # --- CHANGE START: Thresholding and scaling for scatter plot ---
+    # Set a threshold to only show channels with significant peak-to-peak amplitude
+    ptp_threshold = np.percentile(ptp_amps, 80) # Only show top 20% of channels
+    active_mask = ptp_amps > ptp_threshold
+    
+    # Create an array for dot sizes, defaulting to 0 (invisible)
+    sizes = np.zeros_like(ptp_amps)
+    
+    # Calculate sizes only for the active channels
+    if np.any(active_mask):
+        max_active_ptp = ptp_amps[active_mask].max()
+        # Scale sizes for active channels, adding a small base size
+        sizes[active_mask] = 15 + (ptp_amps[active_mask] / max_active_ptp) * 200
+
+    ax1.scatter(channel_positions[:, 0], channel_positions[:, 1], s=sizes, c=peak_negative_smooth,
                 cmap='RdBu_r', edgecolor='black', linewidth=0.7, zorder=2, vmin=v_min, vmax=v_max)
+    # --- CHANGE END ---
+    
     fig.colorbar(contour_fill, ax=ax1, label='Smoothed Peak Amp (µV)', shrink=0.8)
 
     ax2.set_title('Spike Propagation', color='white')
@@ -329,17 +346,10 @@ def plot_rich_ei(fig, median_ei, channel_positions, spatial_features, sampling_r
     ax2.axis('equal')
 
 
-
 def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, selected_cell_id=None):
     """
-    Visualizes the receptive fields of all cells, highlighting the selected cell.
-    
-    Args:
-        fig (matplotlib.figure.Figure): The figure object to draw on.
-        vision_params (VisionCellDataTable): Object containing STAFit data for all cells.
-        sta_width (int, optional): Width of the stimulus in stixels.
-        sta_height (int, optional): Height of the stimulus in stixels.
-        selected_cell_id (int, optional): The 0-indexed ID of the currently selected cell.
+    Visualizes the receptive fields of all cells, highlighting the selected cell
+    by filling its true ellipse shape and making other ellipses more faint.
     """
     fig.clear()
     ax = fig.add_subplot(111)
@@ -351,10 +361,9 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
         ax.set_title("Population Receptive Fields", color='white')
         return
 
-    # Vision data uses 1-indexed cell IDs, so convert the 0-indexed ID from the GUI
     vision_cell_id_selected = selected_cell_id + 1 if selected_cell_id is not None else None
     
-    # Auto-determine plot boundaries
+    # --- Auto-determine plot boundaries from data ---
     x_coords, y_coords = [], []
     for cell_id in cell_ids:
         try:
@@ -367,33 +376,54 @@ def plot_population_rfs(fig, vision_params, sta_width=None, sta_height=None, sel
     x_range = (min(x_coords) - 20, max(x_coords) + 20) if x_coords else (0, 100)
     y_range = (min(y_coords) - 20, max(y_coords) + 20) if y_coords else (0, 100)
     
-    # Loop through all cells and draw their RF ellipses
+    # --- STAGE 1: Draw all non-selected ellipses first to make them faint background ---
     for cell_id in cell_ids:
+        # Skip the selected cell for now; we'll draw it separately.
+        if cell_id == vision_cell_id_selected:
+            continue
+            
         try:
             stafit = vision_params.get_stafit_for_cell(cell_id)
             adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
             
-            if cell_id == vision_cell_id_selected:
-                # Style for the SELECTED cell
-                ellipse = Ellipse(
-                    xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
-                    angle=np.rad2deg(stafit.rot), edgecolor='cyan', facecolor=(0.0, 1.0, 1.0, 0.3),
-                    lw=2.0, alpha=1.0 
-                )
-            else:
-                # Style for ALL OTHER cells
-                ellipse = Ellipse(
-                    xy=(stafit.center_x, adjusted_y), width=2 * stafit.std_x, height=2 * stafit.std_y,
-                    angle=np.rad2deg(stafit.rot), edgecolor='white', facecolor='none',
-                    lw=0.8, alpha=0.4 # Thinner and more transparent
-                )
+            ellipse = Ellipse(
+                xy=(stafit.center_x, adjusted_y),
+                width=2 * stafit.std_x,
+                height=2 * stafit.std_y,
+                angle=np.rad2deg(stafit.rot),
+                edgecolor='white',
+                facecolor='none',
+                lw=0.5,
+                alpha=0.2  # <-- CHANGE: Made even more faint (more transparent)
+            )
             ax.add_patch(ellipse)
         except Exception:
             continue
-    
-    # Style the plot
+
+    # --- STAGE 2: Draw the single, highlighted ellipse on top of everything else ---
+    if vision_cell_id_selected is not None:
+        try:
+            stafit = vision_params.get_stafit_for_cell(vision_cell_id_selected)
+            adjusted_y = sta_height - stafit.center_y if sta_height is not None else stafit.center_y
+
+            # This now correctly uses the selected cell's own parameters for the highlight
+            highlight_ellipse = Ellipse(
+                xy=(stafit.center_x, adjusted_y),
+                width=2 * stafit.std_x,
+                height=2 * stafit.std_y,
+                angle=np.rad2deg(stafit.rot),
+                edgecolor='red',
+                facecolor=(1.0, 0.0, 0.0, 0.4), # Filled with semi-transparent red
+                lw=1.5, # A slightly thicker line to stand out
+                zorder=10 # Ensure it's drawn on top
+            )
+            ax.add_patch(highlight_ellipse)
+        except Exception as e:
+            print(f"Could not draw highlighted ellipse for cell {vision_cell_id_selected}: {e}")
+
+    # --- Plot styling ---
     ax.set_xlim(x_range)
-    ax.set_ylim(y_range[1], y_range[0]) # Invert y-axis to match vision's coordinate system
+    ax.set_ylim(y_range[1], y_range[0])
     ax.set_title("Population Receptive Fields", color='white')
     ax.set_xlabel("X (stixels)", color='gray')
     ax.set_ylabel("Y (stixels)", color='gray')

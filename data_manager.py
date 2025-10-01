@@ -66,13 +66,12 @@ class DataManager(QObject):
             return False, f"Error during Kilosort data loading: {e}"
 
     # --- New Method for Vision Data ---
-    def load_vision_data(self, vision_dir):
+    def load_vision_data(self, vision_dir, dataset_name):
         """
         Loads EI, STA, and params data from a specified Vision directory.
         """
         print(f"[DEBUG] Starting to load vision data from {vision_dir}")  # Debug
         vision_path = Path(vision_dir)
-        dataset_name = vision_path.name
         
         # To get the STA dimensions, we need to access them directly from the STAReader
         # The STAReader has width and height attributes that represent the stimulus dimensions
@@ -237,22 +236,48 @@ class DataManager(QObject):
 
     def get_cluster_spikes(self, cluster_id):
         return self.spike_times[self.spike_clusters == cluster_id]
+    
+    def get_cluster_spikes_in_window(self, cluster_id, start_time, end_time):
+        """
+        Efficiently get spikes for a cluster within a specific time window.
+        
+        This optimized version first finds the time window in the master spike_times
+        array (which is sorted) and only then filters that small slice by cluster_id.
+        This avoids loading all spikes for a high-firing cluster into memory.
+        """
+        # Convert the time window (in seconds) to sample indices.
+        start_sample = int(start_time * self.sampling_rate)
+        end_sample = int(end_time * self.sampling_rate)
 
-    def get_lightweight_features(self, cluster_id, max_spikes_for_vis=100, n_raw_snippets=30):
-        if cluster_id in self.ei_cache: return self.ei_cache[cluster_id]
-        spike_times_cluster = self.get_cluster_spikes(cluster_id)
-        if len(spike_times_cluster) == 0: return None
-        sample_size = min(len(spike_times_cluster), max_spikes_for_vis)
-        spike_sample = np.random.choice(spike_times_cluster, size=sample_size, replace=False)
-        snippets_raw = analysis_core.extract_snippets(str(self.dat_path), spike_sample, n_channels=self.n_channels)
-        snippets_uV = snippets_raw.astype(np.float32) * self.uV_per_bit
-        if snippets_uV.shape[2] == 0: return None
-        pre_samples = 20
-        snippets_bc = analysis_core.baseline_correct(snippets_uV, pre_samples=pre_samples)
-        median_ei = analysis_core.compute_ei(snippets_bc, pre_samples=pre_samples)
-        features = {'median_ei': median_ei, 'raw_snippets': snippets_bc[:, :, :min(n_raw_snippets, snippets_bc.shape[2])]}
-        self.ei_cache[cluster_id] = features
-        return features
+        # Use np.searchsorted to find the start and end indices of our time window.
+        # This is extremely fast because spike_times is sorted.
+        start_idx = np.searchsorted(self.spike_times, start_sample, side='left')
+        end_idx = np.searchsorted(self.spike_times, end_sample, side='right')
+        
+        # If the window is empty or invalid, return an empty array.
+        if start_idx >= end_idx:
+            return np.array([])
+            
+        # Get the small slice of cluster IDs corresponding to our time window.
+        window_cluster_ids = self.spike_clusters[start_idx:end_idx]
+        
+        # Get the small slice of spike times for that same window.
+        window_spike_times = self.spike_times[start_idx:end_idx]
+        
+        # Now, perform the final, fast filter on the small slice.
+        cluster_spikes_in_window = window_spike_times[window_cluster_ids == cluster_id]
+        
+        return cluster_spikes_in_window
+
+    def get_lightweight_features(self, cluster_id):
+        """
+        Non-blocking cache check for lightweight features.
+        
+        This function NO LONGER calculates features. It only checks if they
+        have already been computed and cached. The actual calculation is now
+        handled by the FeatureWorker.
+        """
+        return self.ei_cache.get(cluster_id, None)
 
     def get_heavyweight_features(self, cluster_id):
         if cluster_id in self.heavyweight_cache: return self.heavyweight_cache[cluster_id]
@@ -447,3 +472,32 @@ class DataManager(QObject):
         self.main_window.setup_tree_model(self.main_window.tree_model)
         self.main_window.tree_view.expandAll()
 
+    def get_first_spike_time(self, cluster_id):
+            """
+            Efficiently finds the time of the very first spike for a given cluster.
+            
+            Uses numpy.argmax for a highly optimized search, which is orders of
+            magnitude faster than iterating or filtering the entire spike array.
+
+            Returns:
+                float: The time of the first spike in seconds, or None if the cluster has no spikes.
+            """
+            try:
+                # Create a boolean mask for the selected cluster.
+                cluster_mask = (self.spike_clusters == cluster_id)
+                
+                # Check if the cluster has any spikes at all.
+                if not np.any(cluster_mask):
+                    return None
+                
+                # np.argmax returns the index of the *first* True value. This is extremely fast.
+                first_spike_index = np.argmax(cluster_mask)
+                
+                # Use that index to get the spike time (in samples) from the sorted times array.
+                first_spike_sample = self.spike_times[first_spike_index]
+                
+                # Convert to seconds and return.
+                return first_spike_sample / self.sampling_rate
+            except (IndexError, TypeError):
+                # Return None if any error occurs (e.g., empty arrays).
+                return None
