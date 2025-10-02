@@ -479,10 +479,10 @@ class MainWindow(QMainWindow):
             if hasattr(model, 'mapToSource'):
                 # The pandas model can be sorted, so we must map the view's row to the model's row
                 source_index = model.mapToSource(model.index(selected_row, 0))
-                cluster_id = model._data.iloc[source_index.row()]['cluster_id']
+                cluster_id = model._dataframe.iloc[source_index.row()]['cluster_id']
             else:
                 # If no proxy model, use the row directly
-                cluster_id = model._data.iloc[selected_row]['cluster_id']
+                cluster_id = model._dataframe.iloc[selected_row]['cluster_id']
             return cluster_id
         
         return None
