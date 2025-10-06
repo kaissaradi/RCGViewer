@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from qtpy.QtWidgets import QFileDialog, QMessageBox, QApplication, QStyle
 from qtpy.QtCore import QThread
@@ -42,17 +43,18 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
                                               "Binary Files (*.dat *.bin)")
     if not dat_file:
         main_window.status_bar.showMessage("Data loading cancelled by user.", 5000)
-        return
-        
-    # Use the DataManager's set_dat_path method to create the memory map
-    main_window.data_manager.set_dat_path(Path(dat_file))
+        main_window.analysis_tabs.setTabEnabled(main_window.analysis_tabs.indexOf(main_window.raw_trace_tab), False)
+    else:
+        # Use the DataManager's set_dat_path method to create the memory map
+        main_window.data_manager.set_dat_path(Path(dat_file))
+        main_window.analysis_tabs.setTabEnabled(main_window.analysis_tabs.indexOf(main_window.raw_trace_tab), True)
+    
     main_window.status_bar.showMessage("Building cluster dataframe...")
     QApplication.processEvents()
     
     main_window.data_manager.build_cluster_dataframe()
     
     # Check if a tree structure file exists and load it, otherwise populate with default structure
-    import os
     tree_file_path = os.path.join(ks_dir_name, 'cluster_group_refined_tree.json')
     if os.path.exists(tree_file_path):
         main_window.data_manager.load_tree_structure(tree_file_path)
@@ -181,7 +183,7 @@ def on_tab_changed(main_window, index):
 
     # Handle Spatial Analysis tab
     elif current_widget == main_window.summary_tab:
-        plotting.draw_summary_plot(main_window, cluster_id)
+        plotting.draw_summary_EI_plot(main_window, cluster_id)
         # The rest of your logic for this tab remains the same...
         has_vision_ei = main_window.data_manager.vision_eis and (cluster_id + 1) in main_window.data_manager.vision_eis
         if not has_vision_ei and cluster_id not in main_window.data_manager.heavyweight_cache:
@@ -212,7 +214,7 @@ def on_spatial_data_ready(main_window, cluster_id, features):
     current_id = main_window._get_selected_cluster_id()
     current_tab_widget = main_window.analysis_tabs.currentWidget()
     if cluster_id == current_id and current_tab_widget == main_window.summary_tab:
-        plotting.draw_summary_plot(main_window, cluster_id)
+        plotting.draw_summary_EI_plot(main_window, cluster_id)
         main_window.status_bar.showMessage("Spatial analysis complete.", 2000)
 
 def on_refine_cluster(main_window):

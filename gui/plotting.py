@@ -6,22 +6,30 @@ from scipy.ndimage import gaussian_filter1d
 import analysis_core
 import matplotlib.pyplot as plt
 
-def draw_summary_plot(main_window, cluster_id):
+def draw_summary_EI_plot(main_window, cluster_ids: list):
     # Draws the main spatial analysis plot, switching between custom EI and Vision EI.
-    vision_cluster_id = cluster_id + 1
+    cluster_ids = np.array(cluster_ids)
+    # If scalar, add extra dimension for consistent processing
+    if cluster_ids.ndim == 0:
+        cluster_ids = np.array([cluster_ids])
+    vision_cluster_id = cluster_ids + 1
     
-    # Check if we have Vision EI data
-    has_vision_ei = main_window.data_manager.vision_eis and vision_cluster_id in main_window.data_manager.vision_eis
     
+    
+    # Check if we have Vision EI data for any cluster
+    has_vision_ei = main_window.data_manager.vision_eis and any(
+        cid in main_window.data_manager.vision_eis for cid in vision_cluster_id
+    )
+
     if has_vision_ei:
         if hasattr(main_window, 'ei_animation_timer') and main_window.ei_animation_timer and main_window.ei_animation_timer.isActive():
             main_window.ei_animation_timer.stop()
-        draw_vision_ei_animation(main_window, cluster_id)
+        draw_vision_ei_animation(main_window, cluster_ids)
         main_window.current_spatial_features = None
     else:
         # Fallback to original Kilosort EI-based spatial plot
-        lightweight_features = main_window.data_manager.get_lightweight_features(cluster_id)
-        heavyweight_features = main_window.data_manager.get_heavyweight_features(cluster_id)
+        lightweight_features = main_window.data_manager.get_lightweight_features(cluster_ids)
+        heavyweight_features = main_window.data_manager.get_heavyweight_features(cluster_ids)
         main_window.current_spatial_features = heavyweight_features
         if lightweight_features is None or heavyweight_features is None:
             main_window.summary_canvas.fig.clear()
@@ -33,7 +41,7 @@ def draw_summary_plot(main_window, cluster_id):
         analysis_core.plot_rich_ei(
             main_window.summary_canvas.fig, lightweight_features['median_ei'], main_window.data_manager.channel_positions,
             heavyweight_features, main_window.data_manager.sampling_rate, pre_samples=20)
-        main_window.summary_canvas.fig.suptitle(f"Cluster {cluster_id} Spatial Analysis", color='white', fontsize=16)
+        main_window.summary_canvas.fig.suptitle(f"Cluster {cluster_ids} Spatial Analysis", color='white', fontsize=16)
         main_window.summary_canvas.draw()
 
 def on_summary_plot_hover(main_window, event):
@@ -98,24 +106,32 @@ def update_fr_plot(main_window, cluster_id):
     main_window.fr_plot.setLabel('bottom', 'Time (s)')
     main_window.fr_plot.setLabel('left', 'Firing Rate (Hz)')
 
-def draw_vision_ei_animation(main_window, cluster_id):
+def draw_vision_ei_animation(main_window, cluster_ids: list):
     """Draws an animated visualization of the Vision EI, starting with a peak summary frame."""
-    vision_cluster_id = cluster_id + 1
-    if not main_window.data_manager.vision_eis or vision_cluster_id not in main_window.data_manager.vision_eis:
-        main_window.summary_canvas.fig.clear()
-        main_window.summary_canvas.fig.text(0.5, 0.5, "No Vision EI data available", ha='center', va='center', color='gray')
-        main_window.summary_canvas.draw()
-        main_window.ei_frame_slider.setEnabled(False)
-        return
+    cluster_ids = np.array(cluster_ids)
+    vision_cluster_id = cluster_ids + 1
+    # if not main_window.data_manager.vision_eis or vision_cluster_id not in main_window.data_manager.vision_eis:
+    #     main_window.summary_canvas.fig.clear()
+    #     main_window.summary_canvas.fig.text(0.5, 0.5, "No Vision EI data available", ha='center', va='center', color='gray')
+    #     main_window.summary_canvas.draw()
+    #     main_window.ei_frame_slider.setEnabled(False)
+    #     return
 
-    ei_data = main_window.data_manager.vision_eis[vision_cluster_id].ei
-    main_window.current_ei_data = ei_data
-    main_window.current_ei_cluster_id = cluster_id
-    main_window.n_frames = ei_data.shape[1]
-    
+    ls_ei_data = []
+    for cid in vision_cluster_id:
+        if cid in main_window.data_manager.vision_eis:
+            ls_ei_data.append(main_window.data_manager.vision_eis[cid].ei)
+    # main_window.data_manager.vision_eis[vision_cluster_id].ei
+    main_window.current_ei_data = ls_ei_data
+    main_window.current_ei_cluster_ids = cluster_ids
+    main_window.n_frames = ls_ei_data[0].shape[1]
+
     # --- CHANGE: Create and draw the peak summary frame initially ---
-    summary_frame_data = _create_peak_summary_frame(ei_data)
-    
+    ls_summary_frame_data = []
+    for ei_data in ls_ei_data:
+        sf = _create_peak_summary_frame(ei_data)
+        ls_summary_frame_data.append(sf)
+
     # Update slider properties but don't set a value, as the summary is not a real frame
     main_window.ei_frame_slider.setMinimum(0)
     main_window.ei_frame_slider.setMaximum(main_window.n_frames - 1)
@@ -124,58 +140,87 @@ def draw_vision_ei_animation(main_window, cluster_id):
     main_window.ei_frame_slider.setEnabled(True)
     
     # Draw the summary frame, passing a special index (-1) to identify it
-    draw_vision_ei_frame(main_window, summary_frame_data, -1, main_window.n_frames)
+    draw_vision_ei_frame(main_window, ls_summary_frame_data, -1, main_window.n_frames)
 
-def draw_vision_ei_frame(main_window, frame_data, frame_index, total_frames):
-    """Draws a single EI frame with a fixed color scale and quadratic dot scaling to reduce noise."""
-    full_ei_data = main_window.current_ei_data
-    vmax_global = np.max(np.abs(full_ei_data))
-    vmin_global = -vmax_global
-    
-    # --- FINAL FIX: Quadratic Size Scaling ---
-    amplitudes = np.abs(frame_data)
-    
-    # Using a power > 1 (e.g., 2) suppresses small values, effectively hiding noise
-    # while keeping larger, significant channels visible.
-    sizes = 5 + (amplitudes / vmax_global) ** 2 * 250
-    
-    # --- Non-Linear Color Scaling (from previous step) ---
-    with np.errstate(divide='ignore', invalid='ignore'):
-        scaled_colors = np.sign(frame_data) * np.sqrt(np.abs(frame_data) / vmax_global)
-        scaled_colors = np.nan_to_num(scaled_colors)
+def reshape_ei(ei: np.ndarray, sorted_electrodes: np.ndarray,
+               n_rows: int=16) -> np.ndarray:
+    """
+    Reshape the EI matrix from 512 x 201 to 16 x 32 x 201 based on electrode locations.
 
-    # --- Plotting ---
+    Parameters:
+    ei (numpy.ndarray): The EI matrix of shape (electrode, frames).
+    sorted_electrodes (numpy.ndarray): The sorted indices of the electrodes.
+    n_rows (int): The number of rows to reshape the EI matrix into. Default is 16.
+
+    Returns:
+    numpy.ndarray: The reshaped EI matrix of shape (16, 32, 201).
+    """
+    if ei.shape[0] != 512:
+        print(f'Warning: Expected EI shape (512, 201), got {ei.shape}')
+    n_electrodes = ei.shape[0]
+    n_frames = ei.shape[1]
+    n_cols = n_electrodes // n_rows  # Assuming 512 electrodes and 16 rows
+
+    if n_cols * n_rows != n_electrodes:
+        raise ValueError(f"Number of electrodes {n_electrodes} is not compatible with {n_rows} rows and {n_cols} columns.")
+
+    sorted_ei = ei[sorted_electrodes]
+
+    # Reshape the sorted EI matrix
+    reshaped_ei = sorted_ei.reshape(n_rows, n_cols, n_frames)
+
+    return reshaped_ei
+
+def draw_vision_ei_frame(main_window, ls_summary, frame_index, total_frames):
+    """Draws a single EI frame for each cluster as a subplot."""
+    n_clusters = len(ls_summary)
     main_window.summary_canvas.fig.clear()
-    ax = main_window.summary_canvas.fig.add_subplot(111)
-    ax.set_facecolor('#1f1f1f')
+    axes = main_window.summary_canvas.fig.subplots(nrows=1, ncols=n_clusters, squeeze=False)[0]
 
-    scatter = ax.scatter(
-        main_window.data_manager.channel_positions[:, 0],
-        main_window.data_manager.channel_positions[:, 1],
-        c=scaled_colors, 
-        s=sizes,
-        cmap='RdBu_r',
-        edgecolor='white', 
-        linewidth=0.5,
-        vmin=-1,
-        vmax=1
-    )
 
-    if frame_index == -1:
-        ax.set_title("Vision EI - Peak Amplitude Summary")
-    else:
-        ax.set_title(f"Vision EI - Frame {frame_index + 1}/{total_frames}")
-    
-    norm = plt.Normalize(vmin=vmin_global, vmax=vmax_global)
-    sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=norm)
-    sm.set_array([])
-    cbar = main_window.summary_canvas.fig.colorbar(sm, ax=ax)
-    
-    cbar.set_label('Amplitude (µV)', color='white')
-    cbar.ax.yaxis.set_tick_params(color='white')
-    cbar.outline.set_edgecolor('#444444')
-    for tick_label in cbar.ax.yaxis.get_ticklabels():
-        tick_label.set_color('white')
+    for i, frame_data in enumerate(ls_summary):
+        ax = axes[i]
+        if frame_index == -1:
+            ax.set_title("Vision EI - Peak Summary")
+            ei_map = reshape_ei(
+                frame_data[:, np.newaxis],
+                main_window.data_manager.sorted_channels
+            )
+            ei_map = np.log10(ei_map + 1e-6)
+            im = ax.imshow(ei_map, cmap='hot', aspect='auto', origin='lower')
+            main_window.summary_canvas.fig.colorbar(im, ax=ax, label='Log10 Amplitude (µV)')
+        else:
+            full_ei = main_window.current_ei_data[i]
+            amplitudes = np.abs(full_ei)
+            sizes = amplitudes
+            scaled_colors = frame_data
+            vmax_global = np.max(np.abs(frame_data))
+            vmin_global = -vmax_global
+            scatter = ax.scatter(
+                main_window.data_manager.channel_positions[:, 0],
+                main_window.data_manager.channel_positions[:, 1],
+                c=scaled_colors, 
+                s=sizes,
+                cmap='RdBu_r',
+                edgecolor='white', 
+                linewidth=0.5,
+                # vmin=-1,
+                # vmax=1
+                vmin=vmin_global,
+                vmax=vmax_global
+            )
+            ax.set_title(f"Vision EI - Frame {frame_index + 1}/{total_frames}")
+        
+            norm = plt.Normalize(vmin=vmin_global, vmax=vmax_global)
+            sm = plt.cm.ScalarMappable(cmap='RdBu_r', norm=norm)
+            sm.set_array([])
+            cbar = main_window.summary_canvas.fig.colorbar(sm, ax=ax)
+            
+            cbar.set_label('Amplitude (µV)', color='white')
+            cbar.ax.yaxis.set_tick_params(color='white')
+            cbar.outline.set_edgecolor('#444444')
+            for tick_label in cbar.ax.yaxis.get_ticklabels():
+                tick_label.set_color('white')
     
     main_window.summary_canvas.draw()
 
@@ -363,10 +408,13 @@ def _create_peak_summary_frame(ei_data):
         np.ndarray: A 1D array (n_channels,) with the peak value for each channel.
     """
     # Find the index of the max absolute value along the time axis (axis=1) for each channel
-    peak_indices = np.argmax(np.abs(ei_data), axis=1)
+    # peak_indices = np.argmax(np.abs(ei_data), axis=1)
     
     # Use these indices to pull the corresponding peak value (maintaining the sign) from the data
     # This uses advanced numpy indexing to get ei_data[channel, peak_index_for_that_channel]
-    summary_frame = ei_data[np.arange(ei_data.shape[0]), peak_indices]
-    
-    return summary_frame
+    # summary_frame = ei_data[np.arange(ei_data.shape[0]), peak_indices]
+
+    # return summary_frame
+
+    return np.max(np.abs(ei_data), axis=1)
+

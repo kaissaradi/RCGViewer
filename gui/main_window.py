@@ -1,4 +1,5 @@
 import os
+import random
 from qtpy.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QSplitter, QStatusBar,
@@ -13,7 +14,7 @@ import analysis_core
 from gui.widgets import MplCanvas, PandasModel
 import gui.callbacks as callbacks
 import gui.plotting as plotting
-
+from gui.panels.similarity_panel import SimilarityPanel
 from gui.workers import FeatureWorker
 
 # Global pyqtgraph configuration
@@ -132,19 +133,24 @@ class MainWindow(QMainWindow):
         self.waveform_plot.clear()
         self.isi_plot.clear()
         self.fr_plot.clear()
-        
-        # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
-        if self.feature_worker_thread and self.feature_worker_thread.isRunning():
-            self.feature_worker_thread.quit()
-            self.feature_worker_thread.wait() # This is the critical addition
 
-        self.feature_worker_thread = QThread()
-        self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
-        self.feature_worker.moveToThread(self.feature_worker_thread)
-        self.feature_worker.features_ready.connect(self.on_features_ready)
-        self.feature_worker.error.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
-        self.feature_worker_thread.started.connect(self.feature_worker.run)
-        self.feature_worker_thread.start()
+        # Only run FeatureWorker if dat_path is available
+        if self.data_manager.dat_path is not None:
+            # --- FIX: Ensure the previous worker is fully terminated before starting a new one.
+            if self.feature_worker_thread and self.feature_worker_thread.isRunning():
+                self.feature_worker_thread.quit()
+                self.feature_worker_thread.wait() # This is the critical addition
+
+            self.feature_worker_thread = QThread()
+            self.feature_worker = FeatureWorker(self.data_manager, cluster_id)
+            self.feature_worker.moveToThread(self.feature_worker_thread)
+            self.feature_worker.features_ready.connect(self.on_features_ready)
+            self.feature_worker.error.connect(lambda msg: self.status_bar.showMessage(msg, 4000))
+            self.feature_worker_thread.started.connect(self.feature_worker.run)
+            self.feature_worker_thread.start()
+        else:
+            self.status_bar.showMessage("Raw data file not loaded: waveform plot disabled.", 4000)
+            self._draw_plots(cluster_id, None)
 
     def on_features_ready(self, cluster_id, features):
         """
@@ -163,19 +169,23 @@ class MainWindow(QMainWindow):
     def _draw_plots(self, cluster_id, features):
         """A single, centralized function to update all plots."""
         # Update the standard plots.
-        plotting.update_waveform_plot(self, cluster_id, features)
+        if features is not None:
+            plotting.update_waveform_plot(self, cluster_id, features)
+        else:
+            self.waveform_plot.clear()
+            self.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
         plotting.update_isi_plot(self, cluster_id)
         plotting.update_fr_plot(self, cluster_id)
 
-        # Update the tab-specific plot (Raw Trace, EI, STA).
-        current_widget = self.analysis_tabs.currentWidget()
-        if current_widget == self.raw_trace_tab:
+        # Update the tab-specific plot (Raw Trace).
+        if self.analysis_tabs.currentWidget() == self.raw_trace_tab:
             self.load_raw_trace_data(cluster_id)
-        elif current_widget == self.summary_tab:
-            plotting.draw_summary_plot(self, cluster_id)
-        elif current_widget == self.sta_tab:
+        else:
+            plotting.draw_summary_EI_plot(self, cluster_id)
             self.select_sta_view(self.current_sta_view)
             
+        self.similarity_panel.update_main_cluster_id(cluster_id, self.data_manager.cluster_df)
+        
         self.status_bar.showMessage("Ready.", 2000)
 
     def _setup_ui(self):
@@ -244,7 +254,23 @@ class MainWindow(QMainWindow):
         left_content_layout.addLayout(view_switch_layout)
         left_content_layout.addWidget(self.view_stack)
         left_content_layout.addWidget(self.refine_button)
-        
+
+        # --- Similarity Panel ---
+        # self.similarity_label = QLabel("Similar Clusters")
+        # self.similarity_table = QTableView()
+        # self.similarity_table.setSortingEnabled(True)
+        # self.similarity_table.setAlternatingRowColors(True)
+        # self.similarity_table.setFixedHeight(200)  # Adjust as needed
+        # self.similarity_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        # self.similarity_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+
+        # left_content_layout.addWidget(self.similarity_label)
+        # left_content_layout.addWidget(self.similarity_table)
+        self.similarity_panel = SimilarityPanel()
+        left_content_layout.addWidget(self.similarity_panel)
+        self.similarity_panel.selection_changed.connect(self.on_similarity_selection_changed)
+        self.similarity_panel.mark_duplicates.connect(self.on_mark_duplicates)
+
         # Add the toggle button and content to the left pane
         left_layout.addWidget(self.sidebar_toggle_button)
         left_layout.addWidget(left_content)
@@ -254,11 +280,12 @@ class MainWindow(QMainWindow):
         # --- Right Pane ---
         right_pane = QWidget()
         right_layout = QVBoxLayout(right_pane)
-        self.analysis_tabs = QTabWidget()
-        
-        # Waveforms Tab
-        self.waveforms_tab = QWidget()
-        waveforms_layout = QVBoxLayout(self.waveforms_tab)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        # --- Waveforms Panel ---
+        self.waveforms_panel = QWidget()
+        waveforms_layout = QVBoxLayout(self.waveforms_panel)
         wf_splitter = QSplitter(Qt.Orientation.Vertical)
         self.waveform_plot = pg.PlotWidget(title="Waveforms (Sampled)")
         bottom_panel_splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -270,11 +297,10 @@ class MainWindow(QMainWindow):
         wf_splitter.addWidget(bottom_panel_splitter)
         wf_splitter.setSizes([600, 400])
         waveforms_layout.addWidget(wf_splitter)
-        self.analysis_tabs.addTab(self.waveforms_tab, "Waveform Details")
-        
-        # Spatial Analysis Tab
-        self.summary_tab = QWidget()
-        summary_layout = QVBoxLayout(self.summary_tab)
+
+        # --- Spatial Analysis Panel ---
+        self.spatial_panel = QWidget()
+        spatial_layout = QVBoxLayout(self.spatial_panel)
         
         # Add controls for EI animation
         ei_control_layout = QHBoxLayout()
@@ -305,14 +331,13 @@ class MainWindow(QMainWindow):
         ei_control_layout.addWidget(self.ei_pause_button)
         
         # Add controls and canvas to layout
-        summary_layout.addLayout(ei_control_layout)
+        spatial_layout.addLayout(ei_control_layout)
         self.summary_canvas = MplCanvas(self, width=10, height=8, dpi=120)
-        summary_layout.addWidget(self.summary_canvas)
-        self.analysis_tabs.addTab(self.summary_tab, "Spatial Analysis")
-        
-        # STA Analysis Tab
-        self.sta_tab = QWidget()
-        sta_layout = QVBoxLayout(self.sta_tab)
+        spatial_layout.addWidget(self.summary_canvas)
+
+        # --- STA Analysis Panel ---
+        self.sta_panel = QWidget()
+        sta_layout = QVBoxLayout(self.sta_panel)
         
         # Add buttons to select different STA views
         sta_control_layout = QHBoxLayout()
@@ -363,9 +388,8 @@ class MainWindow(QMainWindow):
         sta_layout.addLayout(sta_control_layout)
         self.sta_canvas = MplCanvas(self, width=10, height=8, dpi=120)
         sta_layout.addWidget(self.sta_canvas)
-        self.analysis_tabs.addTab(self.sta_tab, "STA Analysis")
-        
-        # Raw Trace Tab
+
+        # --- Raw Trace Panel (in a tab) ---
         self.raw_trace_tab = QWidget()
         raw_trace_layout = QVBoxLayout(self.raw_trace_tab)
         
@@ -412,8 +436,24 @@ class MainWindow(QMainWindow):
         # Lock the Y-axis to only allow horizontal panning
         self.raw_trace_plot.plotItem.getViewBox().setMouseEnabled(y=False)
         raw_trace_layout.addWidget(self.raw_trace_plot)
-        
+
+        # --- Bottom Splitter: EI and STA side by side ---
+        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
+        bottom_splitter.addWidget(self.spatial_panel)
+        bottom_splitter.addWidget(self.sta_panel)
+        bottom_splitter.setSizes([700, 700])
+
+        # --- Main Right Splitter: Waveforms on top, EI/STA below ---
+        main_right_splitter = QSplitter(Qt.Orientation.Vertical)
+        main_right_splitter.addWidget(self.waveforms_panel)
+        main_right_splitter.addWidget(bottom_splitter)
+        main_right_splitter.setSizes([400, 600])
+
+        # --- Tab Widget for Raw Trace ---
+        self.analysis_tabs = QTabWidget()
+        self.analysis_tabs.addTab(main_right_splitter, "Main Analysis")
         self.analysis_tabs.addTab(self.raw_trace_tab, "Raw Trace")
+
         right_layout.addWidget(self.analysis_tabs)
 
         # --- Main Splitter and Layout ---
@@ -445,7 +485,6 @@ class MainWindow(QMainWindow):
         self.filter_button.clicked.connect(self.apply_good_filter)
         self.reset_button.clicked.connect(self.reset_views)
         self.refine_button.clicked.connect(self.on_refine_cluster)
-        self.analysis_tabs.currentChanged.connect(self.on_tab_changed)
         self.summary_canvas.fig.canvas.mpl_connect('motion_notify_event', self.on_summary_plot_hover)
         
         # Connect the raw trace plot's x-axis range change to update the plot
@@ -484,10 +523,10 @@ class MainWindow(QMainWindow):
             if hasattr(model, 'mapToSource'):
                 # The pandas model can be sorted, so we must map the view's row to the model's row
                 source_index = model.mapToSource(model.index(selected_row, 0))
-                cluster_id = model._data.iloc[source_index.row()]['cluster_id']
+                cluster_id = model._dataframe.iloc[source_index.row()]['cluster_id']
             else:
                 # If no proxy model, use the row directly
-                cluster_id = model._data.iloc[selected_row]['cluster_id']
+                cluster_id = model._dataframe.iloc[selected_row]['cluster_id']
             return cluster_id
         
         return None
@@ -565,15 +604,24 @@ class MainWindow(QMainWindow):
         
         # Now that views are synced, trigger the update callbacks
         callbacks.on_cluster_selection_changed(self)
-        
         self._is_syncing = False
+
+    def on_similarity_selection_changed(self, selected_cluster_ids):
+        # Always include the main selected cluster
+        main_cluster = self._get_selected_cluster_id()
+        clusters_to_plot = [main_cluster] + selected_cluster_ids
+        # plotting.update_waveform_plot(self, clusters_to_plot)
+        # plotting.update_isi_plot(self, clusters_to_plot)
+        # plotting.update_fr_plot(self, clusters_to_plot)
+        plotting.draw_summary_EI_plot(self, clusters_to_plot)
+
+    def on_mark_duplicates(self, duplicate_ids):
+        # Store or export the duplicate IDs as needed
+        pass
 
     def on_cluster_selection_changed(self, *args):
         callbacks.on_cluster_selection_changed(self)
         
-    def on_tab_changed(self, index):
-        callbacks.on_tab_changed(self, index)
-
     def on_spatial_data_ready(self, cluster_id, features):
         callbacks.on_spatial_data_ready(self, cluster_id, features)
         

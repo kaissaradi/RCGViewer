@@ -6,6 +6,23 @@ from qtpy.QtGui import QStandardItem
 import analysis_core
 import vision_integration # --- New Import ---
 
+def sort_electrode_map(electrode_map: np.ndarray) -> np.ndarray:
+    """
+    Sort electrodes by their x, y locations.
+
+    This uses lexsort to sort electrodes by their x, y locations
+    First sort by rows, break ties by columns. 
+    As each row is jittered but within row the electrodes have exact same y location.
+
+    Parameters:
+    electrode_map (numpy.ndarray): The electrode locations of shape (512, 2).
+
+    Returns:
+    numpy.ndarray: Sorted indices of the electrodes (512,). 
+    """
+    sorted_indices = np.lexsort((electrode_map[:, 0], electrode_map[:, 1]))
+    return sorted_indices
+
 class DataManager(QObject):
     """
     Manages all data loading, processing, and caching.
@@ -41,6 +58,7 @@ class DataManager(QObject):
             self.spike_times = np.load(self.kilosort_dir / 'spike_times.npy').flatten()
             self.spike_clusters = np.load(self.kilosort_dir / 'spike_clusters.npy').flatten()
             self.channel_positions = np.load(self.kilosort_dir / 'channel_positions.npy')
+            self.sorted_channels = sort_electrode_map(self.channel_positions)
             
             info_path = self.kilosort_dir / 'cluster_info.tsv'
             group_path = self.kilosort_dir / 'cluster_group.tsv'
