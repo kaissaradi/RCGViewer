@@ -16,6 +16,7 @@ import gui.callbacks as callbacks
 import gui.plotting as plotting
 from gui.panels.similarity_panel import SimilarityPanel
 from gui.panels.waveforms_panel import WaveformPanel
+from gui.panels.ei_panel import EIPanel
 from gui.workers import FeatureWorker
 
 # Global pyqtgraph configuration
@@ -181,12 +182,13 @@ class MainWindow(QMainWindow):
         sts = self.data_manager.get_cluster_spikes(cluster_id)
         self.waveforms_panel.update_isi(cluster_id, sts, self.data_manager.sampling_rate)
         self.waveforms_panel.update_fr(cluster_id, sts, self.data_manager.sampling_rate)
+        self.ei_panel.update_panel(cluster_id)
 
         # Update the tab-specific plot (Raw Trace).
         if self.analysis_tabs.currentWidget() == self.raw_trace_tab:
             self.load_raw_trace_data(cluster_id)
         else:
-            plotting.draw_summary_EI_plot(self, cluster_id)
+            # plotting.draw_summary_EI_plot(self, cluster_id)
             self.select_sta_view(self.current_sta_view)
             
         self.similarity_panel.update_main_cluster_id(cluster_id, self.data_manager.cluster_df)
@@ -282,41 +284,44 @@ class MainWindow(QMainWindow):
         self.waveforms_panel = WaveformPanel()
 
         # --- Spatial Analysis Panel ---
-        self.spatial_panel = QWidget()
-        spatial_layout = QVBoxLayout(self.spatial_panel)
+        # self.spatial_panel = QWidget()
+        # spatial_layout = QVBoxLayout(self.spatial_panel)
+        
+        # --- EI Analysis Panel ---
+        self.ei_panel = EIPanel(self)
         
         # Add controls for EI animation
-        ei_control_layout = QHBoxLayout()
-        self.ei_frame_slider = QSlider(Qt.Orientation.Horizontal)
-        self.ei_frame_slider.setMinimum(0)
-        self.ei_frame_slider.setMaximum(29)  # Default to 30 frames
-        self.ei_frame_slider.setValue(0)
-        self.ei_frame_slider.setEnabled(False)  # Only enabled when EI data is loaded
-        self.ei_frame_label = QLabel("Frame: 0/30")
-        self.ei_play_button = QPushButton("Play")
-        self.ei_pause_button = QPushButton("Pause")
-        self.ei_prev_frame_button = QPushButton("<< Prev")
-        self.ei_next_frame_button = QPushButton("Next >>")
+        # ei_control_layout = QHBoxLayout()
+        # self.ei_frame_slider = QSlider(Qt.Orientation.Horizontal)
+        # self.ei_frame_slider.setMinimum(0)
+        # self.ei_frame_slider.setMaximum(29)  # Default to 30 frames
+        # self.ei_frame_slider.setValue(0)
+        # self.ei_frame_slider.setEnabled(False)  # Only enabled when EI data is loaded
+        # self.ei_frame_label = QLabel("Frame: 0/30")
+        # self.ei_play_button = QPushButton("Play")
+        # self.ei_pause_button = QPushButton("Pause")
+        # self.ei_prev_frame_button = QPushButton("<< Prev")
+        # self.ei_next_frame_button = QPushButton("Next >>")
         
-        # Connect slider and buttons
-        self.ei_frame_slider.valueChanged.connect(self.update_ei_frame_manual)
-        self.ei_play_button.clicked.connect(self.start_ei_animation)
-        self.ei_pause_button.clicked.connect(self.pause_ei_animation)
-        self.ei_prev_frame_button.clicked.connect(self.prev_ei_frame)
-        self.ei_next_frame_button.clicked.connect(self.next_ei_frame)
+        # # Connect slider and buttons
+        # self.ei_frame_slider.valueChanged.connect(self.update_ei_frame_manual)
+        # self.ei_play_button.clicked.connect(self.start_ei_animation)
+        # self.ei_pause_button.clicked.connect(self.pause_ei_animation)
+        # self.ei_prev_frame_button.clicked.connect(self.prev_ei_frame)
+        # self.ei_next_frame_button.clicked.connect(self.next_ei_frame)
         
-        # Add controls to layout
-        ei_control_layout.addWidget(self.ei_prev_frame_button)
-        ei_control_layout.addWidget(self.ei_frame_slider)
-        ei_control_layout.addWidget(self.ei_next_frame_button)
-        ei_control_layout.addWidget(self.ei_frame_label)
-        ei_control_layout.addWidget(self.ei_play_button)
-        ei_control_layout.addWidget(self.ei_pause_button)
+        # # Add controls to layout
+        # ei_control_layout.addWidget(self.ei_prev_frame_button)
+        # ei_control_layout.addWidget(self.ei_frame_slider)
+        # ei_control_layout.addWidget(self.ei_next_frame_button)
+        # ei_control_layout.addWidget(self.ei_frame_label)
+        # ei_control_layout.addWidget(self.ei_play_button)
+        # ei_control_layout.addWidget(self.ei_pause_button)
         
-        # Add controls and canvas to layout
-        spatial_layout.addLayout(ei_control_layout)
-        self.summary_canvas = MplCanvas(self, width=10, height=8, dpi=120)
-        spatial_layout.addWidget(self.summary_canvas)
+        # # Add controls and canvas to layout
+        # spatial_layout.addLayout(ei_control_layout)
+        # self.summary_canvas = MplCanvas(self, width=10, height=8, dpi=120)
+        # spatial_layout.addWidget(self.summary_canvas)
 
         # --- STA Analysis Panel ---
         self.sta_panel = QWidget()
@@ -422,7 +427,7 @@ class MainWindow(QMainWindow):
 
         # --- Bottom Splitter: EI and STA side by side ---
         bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
-        bottom_splitter.addWidget(self.spatial_panel)
+        bottom_splitter.addWidget(self.ei_panel)
         bottom_splitter.addWidget(self.sta_panel)
         bottom_splitter.setSizes([700, 700])
 
@@ -468,7 +473,7 @@ class MainWindow(QMainWindow):
         self.filter_button.clicked.connect(self.apply_good_filter)
         self.reset_button.clicked.connect(self.reset_views)
         self.refine_button.clicked.connect(self.on_refine_cluster)
-        self.summary_canvas.fig.canvas.mpl_connect('motion_notify_event', self.on_summary_plot_hover)
+        # self.summary_canvas.fig.canvas.mpl_connect('motion_notify_event', self.on_summary_plot_hover)
         
         # Connect the raw trace plot's x-axis range change to update the plot
         self.raw_trace_plot.sigXRangeChanged.connect(self.on_raw_trace_zoom)
@@ -596,7 +601,8 @@ class MainWindow(QMainWindow):
         # plotting.update_waveform_plot(self, clusters_to_plot)
         # plotting.update_isi_plot(self, clusters_to_plot)
         # plotting.update_fr_plot(self, clusters_to_plot)
-        plotting.draw_summary_EI_plot(self, clusters_to_plot)
+        # plotting.draw_summary_EI_plot(self, clusters_to_plot)
+        self.ei_panel.update_panel(clusters_to_plot)
 
     def on_mark_duplicates(self, duplicate_ids):
         # Store or export the duplicate IDs as needed
@@ -1073,94 +1079,94 @@ class MainWindow(QMainWindow):
             self.main_splitter.setSizes([35, total_width - 35])
             self.sidebar_collapsed = True
 
-    def start_ei_animation(self):
-        """Start the EI animation."""
-        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
-            # If timer doesn't exist, create it
-            if self.ei_animation_timer is None:
-                from qtpy.QtCore import QTimer
-                self.ei_animation_timer = QTimer()
-                self.ei_animation_timer.timeout.connect(lambda: self.update_ei_frame())
+    # def start_ei_animation(self):
+    #     """Start the EI animation."""
+    #     if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
+    #         # If timer doesn't exist, create it
+    #         if self.ei_animation_timer is None:
+    #             from qtpy.QtCore import QTimer
+    #             self.ei_animation_timer = QTimer()
+    #             self.ei_animation_timer.timeout.connect(lambda: self.update_ei_frame())
             
-            # Start the timer
-            if not self.ei_animation_timer.isActive():
-                self.ei_animation_timer.start(100)  # 100ms per frame (10 fps)
+    #         # Start the timer
+    #         if not self.ei_animation_timer.isActive():
+    #             self.ei_animation_timer.start(100)  # 100ms per frame (10 fps)
 
-    def pause_ei_animation(self):
-        """Pause the EI animation."""
-        if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
-            self.ei_animation_timer.stop()
+    # def pause_ei_animation(self):
+    #     """Pause the EI animation."""
+    #     if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
+    #         self.ei_animation_timer.stop()
 
-    def start_ei_animation(self):
-        """Start the EI animation, ensuring it is initialized first."""
-        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
+    # def start_ei_animation(self):
+    #     """Start the EI animation, ensuring it is initialized first."""
+    #     if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
             
-            # FIX: Initialize the current_frame if it doesn't exist
-            if not hasattr(self, 'current_frame'):
-                self.current_frame = 0
+    #         # FIX: Initialize the current_frame if it doesn't exist
+    #         if not hasattr(self, 'current_frame'):
+    #             self.current_frame = 0
             
-            # If timer doesn't exist, create it
-            if self.ei_animation_timer is None:
-                from qtpy.QtCore import QTimer
-                self.ei_animation_timer = QTimer()
-                self.ei_animation_timer.timeout.connect(self.update_ei_frame)
+    #         # If timer doesn't exist, create it
+    #         if self.ei_animation_timer is None:
+    #             from qtpy.QtCore import QTimer
+    #             self.ei_animation_timer = QTimer()
+    #             self.ei_animation_timer.timeout.connect(self.update_ei_frame)
             
-            # Start the timer
-            if not self.ei_animation_timer.isActive():
-                self.ei_animation_timer.start(100)  # 100ms per frame (10 fps)
+    #         # Start the timer
+    #         if not self.ei_animation_timer.isActive():
+    #             self.ei_animation_timer.start(100)  # 100ms per frame (10 fps)
 
-    def pause_ei_animation(self):
-        """Pause the EI animation."""
-        if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
-            self.ei_animation_timer.stop()
+    # def pause_ei_animation(self):
+    #     """Pause the EI animation."""
+    #     if hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
+    #         self.ei_animation_timer.stop()
 
-    def prev_ei_frame(self):
-        """Go to the previous frame in the EI animation."""
-        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
-            self.current_frame = (self.current_frame - 1) % self.n_frames
-            self.ei_frame_slider.setValue(self.current_frame)
-            self.update_ei_frame_manual(self.current_frame)
+    # def prev_ei_frame(self):
+    #     """Go to the previous frame in the EI animation."""
+    #     if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
+    #         self.current_frame = (self.current_frame - 1) % self.n_frames
+    #         self.ei_frame_slider.setValue(self.current_frame)
+    #         self.update_ei_frame_manual(self.current_frame)
 
-    def next_ei_frame(self):
-        """Go to the next frame in the EI animation."""
-        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
-            self.current_frame = (self.current_frame + 1) % self.n_frames
-            self.ei_frame_slider.setValue(self.current_frame)
-            self.update_ei_frame_manual(self.current_frame)
+    # def next_ei_frame(self):
+    #     """Go to the next frame in the EI animation."""
+    #     if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
+    #         self.current_frame = (self.current_frame + 1) % self.n_frames
+    #         self.ei_frame_slider.setValue(self.current_frame)
+    #         self.update_ei_frame_manual(self.current_frame)
 
-    def update_ei_frame_manual(self, frame_index, stop_animation=True):
-        """Updates the EI visualization to a specific frame, for manual control."""
-        if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
-            if stop_animation and hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
-                self.ei_animation_timer.stop()
+    # def update_ei_frame_manual(self, frame_index, stop_animation=True):
+    #     """Updates the EI visualization to a specific frame, for manual control."""
+    #     if hasattr(self, 'current_ei_data') and self.current_ei_data is not None:
+    #         if stop_animation and hasattr(self, 'ei_animation_timer') and self.ei_animation_timer and self.ei_animation_timer.isActive():
+    #             self.ei_animation_timer.stop()
             
-            self.current_frame = frame_index
-            self.ei_frame_label.setText(f"Frame: {frame_index+1}/{self.n_frames}")
+    #         self.current_frame = frame_index
+    #         self.ei_frame_label.setText(f"Frame: {frame_index+1}/{self.n_frames}")
             
-            from gui import plotting
-            plotting.draw_vision_ei_frame(
-                self, 
-                self.current_ei_data[:, frame_index], 
-                frame_index, 
-                self.n_frames
-            )
-            # self.summary_canvas.draw() is called inside draw_vision_ei_frame
+    #         from gui import plotting
+    #         plotting.draw_vision_ei_frame(
+    #             self, 
+    #             self.current_ei_data[:, frame_index], 
+    #             frame_index, 
+    #             self.n_frames
+    #         )
+    #         # self.summary_canvas.draw() is called inside draw_vision_ei_frame
 
-    def update_ei_frame(self):
-        """Updates the EI visualization to the next frame for automatic animation."""
-        if not hasattr(self, 'current_ei_data') or self.current_ei_data is None:
-            self.pause_ei_animation()
-            return
+    # def update_ei_frame(self):
+    #     """Updates the EI visualization to the next frame for automatic animation."""
+    #     if not hasattr(self, 'current_ei_data') or self.current_ei_data is None:
+    #         self.pause_ei_animation()
+    #         return
             
-        if self.current_frame >= self.n_frames - 1:
-            self.current_frame = 0
-        else:
-            self.current_frame += 1
+    #     if self.current_frame >= self.n_frames - 1:
+    #         self.current_frame = 0
+    #     else:
+    #         self.current_frame += 1
         
-        # FIX: Block signals, update slider, then unblock to prevent feedback loop
-        self.ei_frame_slider.blockSignals(True); self.ei_frame_slider.setValue(self.current_frame); self.ei_frame_slider.blockSignals(False)
+    #     # FIX: Block signals, update slider, then unblock to prevent feedback loop
+    #     self.ei_frame_slider.blockSignals(True); self.ei_frame_slider.setValue(self.current_frame); self.ei_frame_slider.blockSignals(False)
         
-        self.update_ei_frame_manual(self.current_frame, stop_animation=False)
+    #     self.update_ei_frame_manual(self.current_frame, stop_animation=False)
 
     def closeEvent(self, event):
         """Handles the window close event."""
