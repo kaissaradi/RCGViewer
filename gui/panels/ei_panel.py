@@ -86,7 +86,7 @@ class EIPanel(QWidget):
 
 
     
-    def update_panel(self, cluster_ids):
+    def update_ei(self, cluster_ids):
         """
         Main entry point: update the EI panel for one or more clusters.
         """

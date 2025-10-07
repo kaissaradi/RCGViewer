@@ -4,7 +4,9 @@ from pathlib import Path
 from qtpy.QtCore import QObject, Qt
 from qtpy.QtGui import QStandardItem
 import analysis_core
-import vision_integration # --- New Import ---
+import vision_integration
+from gui.panels.waveforms_panel import REFRACTORY_PERIOD_MS
+
 
 def sort_electrode_map(electrode_map: np.ndarray) -> np.ndarray:
     """
@@ -59,6 +61,9 @@ class DataManager(QObject):
             self.spike_clusters = np.load(self.kilosort_dir / 'spike_clusters.npy').flatten()
             self.channel_positions = np.load(self.kilosort_dir / 'channel_positions.npy')
             self.sorted_channels = sort_electrode_map(self.channel_positions)
+            
+            # templates is (n_clusters, n_timepoints, n_channels)
+            self.templates = np.load(self.kilosort_dir / 'templates.npy')
             
             info_path = self.kilosort_dir / 'cluster_info.tsv'
             group_path = self.kilosort_dir / 'cluster_group.tsv'
@@ -384,7 +389,7 @@ class DataManager(QObject):
             new_rows.append(new_row)
         self.cluster_df = pd.concat([self.cluster_df, pd.DataFrame(new_rows)], ignore_index=True)
 
-    def _calculate_isi_violations(self, cluster_id, refractory_period_ms=2.0):
+    def _calculate_isi_violations(self, cluster_id, refractory_period_ms=REFRACTORY_PERIOD_MS):
         # Check if we already have the ISI calculation for this cluster in cache
         cache_key = (cluster_id, refractory_period_ms)
         if cache_key in self.isi_cache:

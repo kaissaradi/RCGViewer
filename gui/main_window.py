@@ -171,24 +171,22 @@ class MainWindow(QMainWindow):
     def _draw_plots(self, cluster_id, features):
         """A single, centralized function to update all plots."""
         # Update the standard plots.
-        if features is not None:
-            # plotting.update_waveform_plot(self, cluster_id, features)
-            self.waveforms_panel.update_waveforms(cluster_id, {cluster_id: features})
-        else:
-            self.waveforms_panel.clear()
-            self.waveforms_panel.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
-        # plotting.update_isi_plot(self, cluster_id)
-        # plotting.update_fr_plot(self, cluster_id)
+        # if features is not None:
+            # self.waveforms_panel.update_waveforms(cluster_id, {cluster_id: features})
+        # else:
+            # self.waveforms_panel.clear()
+            # self.waveforms_panel.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
+        
+        self.waveforms_panel.update_waveforms(cluster_id)
         sts = self.data_manager.get_cluster_spikes(cluster_id)
         self.waveforms_panel.update_isi(cluster_id, sts, self.data_manager.sampling_rate)
         self.waveforms_panel.update_fr(cluster_id, sts, self.data_manager.sampling_rate)
-        self.ei_panel.update_panel(cluster_id)
+        self.ei_panel.update_ei(cluster_id)
 
         # Update the tab-specific plot (Raw Trace).
         if self.analysis_tabs.currentWidget() == self.raw_trace_tab:
             self.load_raw_trace_data(cluster_id)
         else:
-            # plotting.draw_summary_EI_plot(self, cluster_id)
             self.select_sta_view(self.current_sta_view)
             
         self.similarity_panel.update_main_cluster_id(cluster_id, self.data_manager.cluster_df)
@@ -281,7 +279,7 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(0)
 
         # --- Waveforms Panel ---
-        self.waveforms_panel = WaveformPanel()
+        self.waveforms_panel = WaveformPanel(self)
 
         # --- Spatial Analysis Panel ---
         # self.spatial_panel = QWidget()
@@ -598,11 +596,14 @@ class MainWindow(QMainWindow):
         # Always include the main selected cluster
         main_cluster = self._get_selected_cluster_id()
         clusters_to_plot = [main_cluster] + selected_cluster_ids
+        print(f'[DEBUG] on_similarity_selection_changed: main_cluster = {main_cluster}')
+        print(f'[DEBUG] on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
         # plotting.update_waveform_plot(self, clusters_to_plot)
         # plotting.update_isi_plot(self, clusters_to_plot)
         # plotting.update_fr_plot(self, clusters_to_plot)
         # plotting.draw_summary_EI_plot(self, clusters_to_plot)
-        self.ei_panel.update_panel(clusters_to_plot)
+        self.ei_panel.update_ei(clusters_to_plot)
+        self.waveforms_panel.update_waveforms(clusters_to_plot)
 
     def on_mark_duplicates(self, duplicate_ids):
         # Store or export the duplicate IDs as needed
