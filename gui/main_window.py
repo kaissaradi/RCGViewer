@@ -15,6 +15,7 @@ from gui.widgets import MplCanvas, PandasModel
 import gui.callbacks as callbacks
 import gui.plotting as plotting
 from gui.panels.similarity_panel import SimilarityPanel
+from gui.panels.waveforms_panel import WaveformPanel
 from gui.workers import FeatureWorker
 
 # Global pyqtgraph configuration
@@ -130,9 +131,9 @@ class MainWindow(QMainWindow):
             self._draw_plots(cluster_id, cached_features)
             return
 
-        self.waveform_plot.clear()
-        self.isi_plot.clear()
-        self.fr_plot.clear()
+        # self.waveform_plot.clear()
+        # self.isi_plot.clear()
+        # self.fr_plot.clear()
 
         # Only run FeatureWorker if dat_path is available
         if self.data_manager.dat_path is not None:
@@ -170,12 +171,16 @@ class MainWindow(QMainWindow):
         """A single, centralized function to update all plots."""
         # Update the standard plots.
         if features is not None:
-            plotting.update_waveform_plot(self, cluster_id, features)
+            # plotting.update_waveform_plot(self, cluster_id, features)
+            self.waveforms_panel.update_waveforms(cluster_id, {cluster_id: features})
         else:
-            self.waveform_plot.clear()
-            self.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
-        plotting.update_isi_plot(self, cluster_id)
-        plotting.update_fr_plot(self, cluster_id)
+            self.waveforms_panel.clear()
+            self.waveforms_panel.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
+        # plotting.update_isi_plot(self, cluster_id)
+        # plotting.update_fr_plot(self, cluster_id)
+        sts = self.data_manager.get_cluster_spikes(cluster_id)
+        self.waveforms_panel.update_isi(cluster_id, sts, self.data_manager.sampling_rate)
+        self.waveforms_panel.update_fr(cluster_id, sts, self.data_manager.sampling_rate)
 
         # Update the tab-specific plot (Raw Trace).
         if self.analysis_tabs.currentWidget() == self.raw_trace_tab:
@@ -256,16 +261,6 @@ class MainWindow(QMainWindow):
         left_content_layout.addWidget(self.refine_button)
 
         # --- Similarity Panel ---
-        # self.similarity_label = QLabel("Similar Clusters")
-        # self.similarity_table = QTableView()
-        # self.similarity_table.setSortingEnabled(True)
-        # self.similarity_table.setAlternatingRowColors(True)
-        # self.similarity_table.setFixedHeight(200)  # Adjust as needed
-        # self.similarity_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        # self.similarity_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-
-        # left_content_layout.addWidget(self.similarity_label)
-        # left_content_layout.addWidget(self.similarity_table)
         self.similarity_panel = SimilarityPanel()
         left_content_layout.addWidget(self.similarity_panel)
         self.similarity_panel.selection_changed.connect(self.on_similarity_selection_changed)
@@ -284,19 +279,7 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(0)
 
         # --- Waveforms Panel ---
-        self.waveforms_panel = QWidget()
-        waveforms_layout = QVBoxLayout(self.waveforms_panel)
-        wf_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.waveform_plot = pg.PlotWidget(title="Waveforms (Sampled)")
-        bottom_panel_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.isi_plot = pg.PlotWidget(title="Inter-Spike Interval (ISI) Histogram")
-        self.fr_plot = pg.PlotWidget(title="Smoothed Firing Rate")
-        bottom_panel_splitter.addWidget(self.isi_plot)
-        bottom_panel_splitter.addWidget(self.fr_plot)
-        wf_splitter.addWidget(self.waveform_plot)
-        wf_splitter.addWidget(bottom_panel_splitter)
-        wf_splitter.setSizes([600, 400])
-        waveforms_layout.addWidget(wf_splitter)
+        self.waveforms_panel = WaveformPanel()
 
         # --- Spatial Analysis Panel ---
         self.spatial_panel = QWidget()
