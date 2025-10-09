@@ -42,7 +42,7 @@ class EIPanel(QWidget):
         self.current_ei_data = None
         self.current_cluster_ids = None
         self.n_frames = 0
-        self.current_frame = 0
+        self.n_max_cols = 3
 
     # --- Public API ---
 
@@ -64,9 +64,9 @@ class EIPanel(QWidget):
         """
         Main entry point: update the EI panel for one or more clusters.
         """
-        cluster_ids = np.array(cluster_ids)
+        cluster_ids = np.array(cluster_ids, dtype=int)
         if cluster_ids.ndim == 0:
-            cluster_ids = np.array([cluster_ids])
+            cluster_ids = np.array([cluster_ids], dtype=int)
         vision_cluster_ids = cluster_ids + 1
 
         # Check for Vision EI
@@ -100,48 +100,99 @@ class EIPanel(QWidget):
         self.current_ei_data = ei_data_list
         self.current_cluster_ids = cluster_ids
         self.n_frames = ei_data_list[0].shape[1]
-        self.current_frame = 0
 
-        # Draw peak summary frame
-        summary_frames = [self._create_peak_summary_frame(ei) for ei in ei_data_list]
-        self._draw_vision_ei_frame(summary_frames, cluster_ids)
-        # self._draw_vision_ei_temporal(ei_data_list, cluster_ids)
+        # Make EI maps
+        ei_map_list = []
+        # ei_rs_list = []
+        for ei_data in ei_data_list:
+            ei = self._reshape_ei(
+                ei_data,
+                self.main_window.data_manager.sorted_channels
+            )
+            # ei_rs_list.append(ei)
+            # Get EI map = abs max projection across timeframes
+            ei_map = np.max(np.abs(ei), axis=2)
+            # log10 for visualization
+            ei_map = np.log10(ei_map + 1e-6)
+            ei_map_list.append(ei_map)
+
+        # Get top electrode for first cluster
+        top_channels = self._get_top_electrodes(
+            ei_map_list[0], ei_data_list[0], 
+            n_interval=2, n_markers=5, b_sort=True
+        ) 
+         
+        # Draw spatial and temporal EI
+        self._draw_vision_ei_spatial(ei_map_list, cluster_ids)
+        self._draw_vision_ei_temporal(ei_data_list, cluster_ids, top_channels)
 
     def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
         """
         Example: Plot temporal EI traces for the given clusters.
         """
         self.temporal_canvas.fig.clear()
-        n_clusters = len(ei_data_list)
-        axes = self.temporal_canvas.fig.subplots(nrows=n_clusters, ncols=1, squeeze=False)[0]
-        for i, ei_data in enumerate(ei_data_list):
+        n_channels = len(channels)
+        n_cols = min(n_channels, self.n_max_cols)
+        n_rows = (n_channels + n_cols - 1) // n_cols
+        self.temporal_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows)
+        axes = self.temporal_canvas.fig.subplots(nrows=n_rows, ncols=n_cols)
+        axes = axes.flatten() if n_channels > 1 else [axes]
+
+        for i, ch in enumerate(channels):
+            channel_idx = self.main_window.data_manager.sorted_channels[ch]
             ax = axes[i]
-            time = np.arange(ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
-            for ch in range(ei_data.shape[0]):
-                ax.plot(time, ei_data[ch, :], alpha=0.3)
-            ax.set_title(f"Cluster {cluster_ids[i]} Temporal EI")
+            for j, ei_data in enumerate(ei_data_list):
+                time = np.arange(ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
+                ax.plot(time, ei_data[channel_idx, :], alpha=0.3, label=f'Cluster {cluster_ids[j]}')
+            ax.set_title(f"{i} Chan {channel_idx}")
             ax.set_xlabel("Time (ms)")
-            ax.set_ylabel("Amplitude (µV)")
+            # ax.set_ylabel("Amplitude (µV)")
+            # ax.legend()
     
-    def _draw_vision_ei_frame(self, ls_summary, cluster_ids):
-        n_clusters = len(ls_summary)
+    def _draw_vision_ei_spatial(self, ei_map_list, cluster_ids, channels=None):
+        n_clusters = len(ei_map_list)
         self.spatial_canvas.fig.clear()
-        axes = self.spatial_canvas.fig.subplots(nrows=1, ncols=n_clusters, squeeze=False)[0]
-        for i, frame_data in enumerate(ls_summary):
+        n_cols = min(n_clusters, self.n_max_cols)
+        n_rows = (n_clusters + n_cols - 1) // n_cols
+        self.spatial_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows)
+        axes = self.spatial_canvas.fig.subplots(nrows=n_rows, ncols=n_cols)
+        axes = axes.flatten() if n_clusters > 1 else [axes]
+
+        for i, ei_map in enumerate(ei_map_list):
             ax = axes[i]
             ax.set_title(f"{cluster_ids[i]} EI")
-            ei_map = self._reshape_ei(
-                frame_data[:, np.newaxis],
-                self.main_window.data_manager.sorted_channels
-            )
-            ei_map = np.log10(ei_map + 1e-6)
             im = ax.imshow(ei_map, cmap='hot', aspect='auto', origin='lower')
             self.spatial_canvas.fig.colorbar(im, ax=ax, label='Log10 Amplitude (µV)')
+
+            # if channels is not None:
+            #     for ch in channels:
+            #         y, x = np.unravel_index(ch, ei_map.shape)
+            #         ax.plot(x, y, 'bo', markersize=10, markerfacecolor='none', markeredgewidth=2)
+            #         ax.text(x, y, str(ch), color='cyan', fontsize=12, ha='center', va='center')
         self.spatial_canvas.fig.suptitle("Spatial Analysis (EI)", color='white', fontsize=16)
         self.spatial_canvas.draw()
 
-    # --- Internal: Kilosort EI ---
+    def _get_top_electrodes(self, ei_map, ei, n_interval=2, n_markers=5, b_sort=True):
+        ## Label top n_markers pixels spaced by n_interval in the heatmap
+        # Sorted index of pixels
+        ei_map_sidx = np.argsort(ei_map.flatten())[::-1]
+        top_idx = ei_map_sidx[::n_interval][:n_markers]
 
+        # Sort top_idx by argmin of EI time series
+        if b_sort:
+            amin_ei_ts = np.zeros(n_markers)
+            for i in range(n_markers):
+                # y, x = np.unravel_index(top_idx[i], ei_map.shape)
+                # ei_ts = ei_grid[:, y, x]
+                # ei_ts = ei[y, x, :]
+                channel_idx = self.main_window.data_manager.sorted_channels[top_idx[i]]
+                ei_ts = ei[channel_idx, :]
+                amin_ei_ts[i] = np.argmin(ei_ts)
+            top_idx = top_idx[np.argsort(amin_ei_ts)]
+
+        return top_idx
+
+    # --- Internal: Kilosort EI ---
     def _load_and_draw_ks_ei(self, cluster_ids):
         lightweight_features = self.main_window.data_manager.get_lightweight_features(cluster_ids)
         heavyweight_features = self.main_window.data_manager.get_heavyweight_features(cluster_ids)
@@ -161,8 +212,6 @@ class EIPanel(QWidget):
         self.spatial_canvas.fig.suptitle(f"Cluster {cluster_ids} Spatial Analysis", color='white', fontsize=16)
         self.spatial_canvas.draw()
 
-    # --- Utility functions (copied from plotting.py) ---
-
     def _reshape_ei(self, ei: np.ndarray, sorted_electrodes: np.ndarray, n_rows: int=16) -> np.ndarray:
         if ei.shape[0] != 512:
             print(f'Warning: Expected EI shape (512, 201), got {ei.shape}')
@@ -174,6 +223,3 @@ class EIPanel(QWidget):
         sorted_ei = ei[sorted_electrodes]
         reshaped_ei = sorted_ei.reshape(n_rows, n_cols, n_frames)
         return reshaped_ei
-
-    def _create_peak_summary_frame(self, ei_data):
-        return np.max(np.abs(ei_data), axis=1)
