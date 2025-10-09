@@ -249,6 +249,7 @@ class DataManager(QObject):
         df = pd.merge(df, info_subset, on='cluster_id', how='left')
         df['status'] = 'Original'
         self.cluster_df = df[['cluster_id', 'KSLabel', 'n_spikes', 'isi_violations_pct', 'status']]
+        self.cluster_df['cluster_id'] = self.cluster_df['cluster_id'].astype(int)
         self.original_cluster_df = self.cluster_df.copy()
         print(f"[DEBUG] build_cluster_dataframe complete")  # Debug
         

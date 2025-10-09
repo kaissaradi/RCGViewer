@@ -177,10 +177,7 @@ class MainWindow(QMainWindow):
             # self.waveforms_panel.clear()
             # self.waveforms_panel.waveform_plot.setTitle("Waveforms (Raw data not loaded)")
         
-        self.waveforms_panel.update_waveforms(cluster_id)
-        sts = self.data_manager.get_cluster_spikes(cluster_id)
-        self.waveforms_panel.update_isi(cluster_id, sts, self.data_manager.sampling_rate)
-        self.waveforms_panel.update_fr(cluster_id, sts, self.data_manager.sampling_rate)
+        self.waveforms_panel.update_all(cluster_id)
         self.ei_panel.update_ei(cluster_id)
 
         # Update the tab-specific plot (Raw Trace).
@@ -598,12 +595,9 @@ class MainWindow(QMainWindow):
         clusters_to_plot = [main_cluster] + selected_cluster_ids
         print(f'[DEBUG] on_similarity_selection_changed: main_cluster = {main_cluster}')
         print(f'[DEBUG] on_similarity_selection_changed: clusters_to_plot = {clusters_to_plot}')
-        # plotting.update_waveform_plot(self, clusters_to_plot)
-        # plotting.update_isi_plot(self, clusters_to_plot)
-        # plotting.update_fr_plot(self, clusters_to_plot)
-        # plotting.draw_summary_EI_plot(self, clusters_to_plot)
+
         self.ei_panel.update_ei(clusters_to_plot)
-        self.waveforms_panel.update_waveforms(clusters_to_plot)
+        self.waveforms_panel.update_all(clusters_to_plot)
 
     def on_mark_duplicates(self, duplicate_ids):
         # Store or export the duplicate IDs as needed

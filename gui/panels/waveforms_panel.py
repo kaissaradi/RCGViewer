@@ -26,6 +26,11 @@ class WaveformPanel(QWidget):
         splitter = QSplitter()
         splitter.setOrientation(pg.QtCore.Qt.Vertical)
 
+        # sampling rate
+        self.sampling_rate = 20000.0  # Default
+        if hasattr(self.main_window.data_manager, 'sampling_rate'):
+            self.sampling_rate = self.main_window.data_manager.sampling_rate
+
         # --- Top: Waveform grid plot ---
         self.waveform_grid_widget = pg.GraphicsLayoutWidget()
         self.waveform_grid_plot = self.waveform_grid_widget.addPlot()
@@ -69,7 +74,7 @@ class WaveformPanel(QWidget):
         self._last_templates = None
         self._last_channel_positions = None
         self._last_cluster_ids = None
-        self._last_color_map = None
+        self._last_colors = None
 
     def _focus_waveform_plot(self, ev):
         self.waveform_grid_widget.setFocus()
@@ -106,10 +111,27 @@ class WaveformPanel(QWidget):
                 self._last_templates,
                 self._last_channel_positions,
                 cluster_ids=self._last_cluster_ids,
-                color_map=self._last_color_map
+                color_map=self._last_colors
             )
 
-    def update_waveforms(self, cluster_ids, color_map=None):
+    def update_all(self, cluster_ids, color_map=None, colors=None):
+        # If single cluster_id, make it a list
+        if np.isscalar(cluster_ids):
+            cluster_ids = [cluster_ids]
+        cluster_ids = np.array(cluster_ids, dtype=int)
+        n_clusters = len(cluster_ids)
+        self._last_cluster_ids = cluster_ids
+
+        if colors is None:
+            if color_map and cluster_ids:
+                colors = [color_map.get(cid, (200, 200, 255)) for cid in cluster_ids]
+            else:
+                colors = [pg.intColor(i, hues=n_clusters) for i in range(n_clusters)]
+        self.update_waveforms(cluster_ids, colors)
+        self.update_isi(cluster_ids, colors)
+        self.update_fr(cluster_ids, colors)
+    
+    def update_waveforms(self, cluster_ids, colors):
         """
         Update the waveform grid plot for the given cluster(s).
         Args:
@@ -124,10 +146,7 @@ class WaveformPanel(QWidget):
             return
 
         templates = []
-        # If single cluster_id, make it a list
-        if np.isscalar(cluster_ids):
-            cluster_ids = [cluster_ids]
-        cluster_ids = np.array(cluster_ids, dtype=int)
+       
         for cid in cluster_ids:
             # Use the template for this cluster
             if hasattr(data_manager, 'templates'):
@@ -145,13 +164,13 @@ class WaveformPanel(QWidget):
         self._last_templates = templates
         self._last_channel_positions = channel_positions
         self._last_cluster_ids = cluster_ids
-        self._last_color_map = color_map
+        self._last_colors = colors
 
-        self._plot_waveforms_on_grid(templates, channel_positions, cluster_ids=cluster_ids, color_map=color_map)
+        self._plot_waveforms_on_grid(templates, channel_positions, cluster_ids=cluster_ids, colors=colors)
 
     def _plot_waveforms_on_grid(
-        self, templates, channel_positions, wf_scale=None, t_scale=None, amplitude_threshold=0.00,
-        overlap=None, colors=None, x_ch_sep=None, y_ch_sep=None, wf_norm=None, cluster_ids=None, color_map=None
+        self, templates, channel_positions, colors, wf_scale=None, t_scale=None, amplitude_threshold=0.00,
+        overlap=None, x_ch_sep=None, y_ch_sep=None, wf_norm=None, cluster_ids=None
     ):
         # Use current settings if not provided
         wf_scale = wf_scale if wf_scale is not None else self.wf_scale
@@ -162,11 +181,6 @@ class WaveformPanel(QWidget):
         wf_norm = wf_norm if wf_norm is not None else self.wf_norm
 
         n_templates, n_timepoints, n_channels = templates.shape
-        if colors is None:
-            if color_map and cluster_ids:
-                colors = [color_map.get(cid, (200, 200, 255)) for cid in cluster_ids]
-            else:
-                colors = [pg.intColor(i, hues=n_templates) for i in range(n_templates)]
 
         # Scale channel positions
         ch_pos = channel_positions.copy()
@@ -227,35 +241,58 @@ class WaveformPanel(QWidget):
         self.waveform_grid_plot.hideAxis('bottom')
         self.waveform_grid_plot.hideAxis('left')
 
-    def update_isi(self, cluster_id, spike_times, sampling_rate):
+    def update_isi(self, cluster_ids, colors):
+
+        data_manager = self.main_window.data_manager
         self.isi_plot.clear()
-        if spike_times is None or len(spike_times) < 2:
-            self.isi_plot.setTitle("ISI (No data)")
-            return
-        isi_ms = np.diff(spike_times) / sampling_rate * 1000
-        bins = np.linspace(0, 50, 101)
-        y, x = np.histogram(isi_ms, bins=bins)
-        self.isi_plot.plot(x, y, stepMode="center", fillLevel=0, brush=(0, 163, 224, 150))
+        
+        for idx, cid in enumerate(cluster_ids):
+            sts = data_manager.get_cluster_spikes(cid)
+
+        
+            if sts is None or len(sts) < 2:
+                print(f'[DEBUG] No spike times for cluster {cid}')
+                continue
+            
+            isi_ms = np.diff(sts) / self.sampling_rate * 1000
+            bins = np.linspace(0, 50, 101)
+            y, x = np.histogram(isi_ms, bins=bins)
+
+            color = colors[idx] if isinstance(colors[idx], (tuple, list)) else pg.mkColor(colors[idx])
+            pen = pg.mkPen(color=color, width=2)
+            # self.isi_plot.plot(x, y, stepMode="center", fillLevel=0, brush=(0, 163, 224, 150))
+            self.isi_plot.plot(x, y, stepMode="center", pen=pen)
+        
         self.isi_plot.addLine(x=REFRACTORY_PERIOD_MS, pen=pg.mkPen('r', style=Qt.PenStyle.DashLine, width=2))
-        self.isi_plot.setTitle(f"ISI Histogram (Cluster {cluster_id})")
+        self.isi_plot.setTitle(f"ISI Histogram (Cluster {cluster_ids})")
         self.isi_plot.setLabel('bottom', 'ISI (ms)')
         self.isi_plot.setLabel('left', 'Count')
 
-    def update_fr(self, cluster_id, spike_times, sampling_rate):
+    def update_fr(self, cluster_ids, colors):
         self.fr_plot.clear()
-        if spike_times is None or len(spike_times) < 2:
-            self.fr_plot.setTitle("Firing Rate (No data)")
-            return
-        spike_times_sec = spike_times / sampling_rate
-        duration = spike_times_sec[-1] - spike_times_sec[0]
-        if duration <= 0:
-            self.fr_plot.setTitle("Firing Rate (No data)")
-            return
-        bins = np.arange(0, duration+1, 1)
-        counts, _ = np.histogram(spike_times_sec, bins=bins)
-        rate = gaussian_filter1d(counts.astype(float), sigma=5)
-        self.fr_plot.plot(bins[:-1], rate, pen='y')
-        self.fr_plot.setTitle(f"Firing Rate (Cluster {cluster_id})")
+        data_manager = self.main_window.data_manager
+
+        for idx, cluster_id in enumerate(cluster_ids):
+            sts = data_manager.get_cluster_spikes(cluster_id)
+
+            if sts is None or len(sts) < 2:
+                print(f'[DEBUG] No spike times for cluster {cluster_id}')
+                continue
+
+            spike_times_sec = sts / self.sampling_rate
+            duration = spike_times_sec[-1] - spike_times_sec[0]
+            if duration <= 0:
+                print(f'[DEBUG] No valid duration for cluster {cluster_id}')
+                continue
+
+            bins = np.arange(0, duration+1, 1)
+            counts, _ = np.histogram(spike_times_sec, bins=bins)
+            rate = gaussian_filter1d(counts.astype(float), sigma=5)
+            color = colors[idx] if isinstance(colors[idx], (tuple, list)) else pg.mkColor(colors[idx])
+            pen = pg.mkPen(color=color, width=2)
+            self.fr_plot.plot(bins[:-1], rate, pen=pen)
+
+        self.fr_plot.setTitle(f"Firing Rate (Cluster {cluster_ids})")
         self.fr_plot.setLabel('bottom', 'Time (s)')
         self.fr_plot.setLabel('left', 'Rate (Hz)')
 
