@@ -110,13 +110,11 @@ class EIPanel(QWidget):
 
         # Make EI maps
         ei_map_list = []
-        # ei_rs_list = []
         for ei_data in ei_data_list:
             ei = self._reshape_ei(
                 ei_data,
                 self.main_window.data_manager.sorted_channels
             )
-            # ei_rs_list.append(ei)
             # Get EI map = abs max projection across timeframes
             ei_map = np.max(np.abs(ei), axis=2)
             # log10 for visualization
@@ -126,11 +124,11 @@ class EIPanel(QWidget):
         # Get top electrode for first cluster
         top_channels = self._get_top_electrodes(
             ei_map_list[0], ei_data_list[0], 
-            n_interval=2, n_markers=5, b_sort=True
+            n_interval=2, n_markers=3, b_sort=True
         ) 
          
         # Draw spatial and temporal EI
-        self._draw_vision_ei_spatial(ei_map_list, cluster_ids)
+        self._draw_vision_ei_spatial(ei_map_list, cluster_ids, top_channels)
         self._draw_vision_ei_temporal(ei_data_list, cluster_ids, top_channels)
 
     def _draw_vision_ei_temporal(self, ei_data_list, cluster_ids, channels):
@@ -141,8 +139,7 @@ class EIPanel(QWidget):
         n_channels = len(channels)
         n_cols = min(n_channels, self.n_max_cols)
         n_rows = (n_channels + n_cols - 1) // n_cols
-        # self.temporal_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows, sharex=True, sharey=True)
-        axes = self.temporal_canvas.fig.subplots(nrows=n_rows, ncols=n_cols)
+        axes = self.temporal_canvas.fig.subplots(nrows=n_rows, ncols=n_cols, sharex=True, sharey=True)
         axes = axes.flatten() if n_channels > 1 else [axes]
 
         for i, ch in enumerate(channels):
@@ -150,11 +147,23 @@ class EIPanel(QWidget):
             ax = axes[i]
             for j, ei_data in enumerate(ei_data_list):
                 time = np.arange(ei_data.shape[1]) / self.main_window.data_manager.sampling_rate * 1000  # ms
-                ax.plot(time, ei_data[channel_idx, :], alpha=0.3, label=f'Cluster {cluster_ids[j]}')
+                ax.plot(time, ei_data[channel_idx, :], alpha=0.7, label=f'Cluster {cluster_ids[j]}')
             ax.set_title(f"{i} Chan {channel_idx}")
             ax.set_xlabel("Time (ms)")
             # ax.set_ylabel("Amplitude (µV)")
             # ax.legend()
+            ax.grid(True)
+            ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
+        
+        # Turn off any unused axes
+        for k in range(i+1, len(axes)):
+            axes[k].axis('off')
+
+        # Legend over top of all subplots shared across top row
+        handles, labels = axes[0].get_legend_handles_labels()
+        if handles:
+            self.temporal_canvas.fig.legend(handles, labels, loc='upper center', ncol=len(cluster_ids), bbox_to_anchor=(0.5, 1.02))
+        
         self.temporal_canvas.fig.suptitle("Temporal Analysis (EI)", color='white', fontsize=16)
         self.temporal_canvas.fig.tight_layout()
         self.temporal_canvas.draw()
@@ -164,21 +173,25 @@ class EIPanel(QWidget):
         self.spatial_canvas.fig.clear()
         n_cols = min(n_clusters, self.n_max_cols)
         n_rows = (n_clusters + n_cols - 1) // n_cols
-        # self.spatial_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows)
         axes = self.spatial_canvas.fig.subplots(nrows=n_rows, ncols=n_cols)
         axes = axes.flatten() if n_clusters > 1 else [axes]
 
         for i, ei_map in enumerate(ei_map_list):
             ax = axes[i]
-            ax.set_title(f"{cluster_ids[i]} EI")
-            im = ax.imshow(ei_map, cmap='hot', aspect='auto', origin='lower')
-            self.spatial_canvas.fig.colorbar(im, ax=ax, label='Log10 Amplitude (µV)')
+            ax.set_title(f"Cluster {cluster_ids[i]} EI")
+            im = ax.imshow(ei_map, cmap='hot', aspect='equal', origin='lower')
+            # self.spatial_canvas.fig.colorbar(im, ax=ax, label='Log10 Amplitude (µV)')
 
-            # if channels is not None:
-            #     for ch in channels:
-            #         y, x = np.unravel_index(ch, ei_map.shape)
-            #         ax.plot(x, y, 'bo', markersize=10, markerfacecolor='none', markeredgewidth=2)
-            #         ax.text(x, y, str(ch), color='cyan', fontsize=12, ha='center', va='center')
+            if channels is not None:
+                for j, ch in enumerate(channels):
+                    y, x = np.unravel_index(ch, ei_map.shape)
+                    ax.plot(x, y, 'go', markersize=3, markerfacecolor='none', markeredgewidth=2)
+                    ax.text(x, y, str(j), color='cyan', fontsize=6, ha='center', va='center')
+        
+        # Turn off any unused axes
+        for k in range(i+1, len(axes)):
+            axes[k].axis('off')
+        
         self.spatial_canvas.fig.suptitle("Spatial Analysis (EI)", color='white', fontsize=16)
         self.spatial_canvas.fig.tight_layout()
         self.spatial_canvas.draw()

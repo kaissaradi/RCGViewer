@@ -101,6 +101,10 @@ def load_directory(main_window, kilosort_dir=None, dat_file=None):
     main_window.load_classification_action.setEnabled(True)
     main_window.status_bar.showMessage(f"Successfully loaded {len(main_window.data_manager.cluster_df)} clusters.", 5000)
 
+    # Hide sta_panel if no vision STAs are loaded
+    if not main_window.data_manager.vision_stas:
+        main_window.sta_panel.hide()
+
 def load_vision_directory(main_window):
     """Handles the logic for loading a Vision analysis directory."""
     if not main_window.data_manager:

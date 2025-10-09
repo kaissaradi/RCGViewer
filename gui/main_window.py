@@ -385,9 +385,9 @@ class MainWindow(QMainWindow):
         top_splitter = QSplitter(Qt.Orientation.Horizontal)
         top_splitter.addWidget(self.waveforms_panel)
         top_splitter.addWidget(self.sta_panel)
-        top_splitter.setSizes([600, 600])
+        top_splitter.setSizes([800, 200])
 
-        # --- Main Right Splitter: Top (waveforms+STA), Bottom (EI+TemporalEI) ---
+        # --- Main Right Splitter: Top (waveforms+STA), Bottom (EI spatial and temporal) ---
         main_right_splitter = QSplitter(Qt.Orientation.Vertical)
         main_right_splitter.addWidget(top_splitter)
         main_right_splitter.addWidget(self.ei_panel)
