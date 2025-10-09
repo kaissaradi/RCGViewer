@@ -275,48 +275,9 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(0)
 
-        # --- Waveforms Panel ---
+        # --- Panels ---
         self.waveforms_panel = WaveformPanel(self)
-
-        # --- Spatial Analysis Panel ---
-        # self.spatial_panel = QWidget()
-        # spatial_layout = QVBoxLayout(self.spatial_panel)
-        
-        # --- EI Analysis Panel ---
         self.ei_panel = EIPanel(self)
-        
-        # Add controls for EI animation
-        # ei_control_layout = QHBoxLayout()
-        # self.ei_frame_slider = QSlider(Qt.Orientation.Horizontal)
-        # self.ei_frame_slider.setMinimum(0)
-        # self.ei_frame_slider.setMaximum(29)  # Default to 30 frames
-        # self.ei_frame_slider.setValue(0)
-        # self.ei_frame_slider.setEnabled(False)  # Only enabled when EI data is loaded
-        # self.ei_frame_label = QLabel("Frame: 0/30")
-        # self.ei_play_button = QPushButton("Play")
-        # self.ei_pause_button = QPushButton("Pause")
-        # self.ei_prev_frame_button = QPushButton("<< Prev")
-        # self.ei_next_frame_button = QPushButton("Next >>")
-        
-        # # Connect slider and buttons
-        # self.ei_frame_slider.valueChanged.connect(self.update_ei_frame_manual)
-        # self.ei_play_button.clicked.connect(self.start_ei_animation)
-        # self.ei_pause_button.clicked.connect(self.pause_ei_animation)
-        # self.ei_prev_frame_button.clicked.connect(self.prev_ei_frame)
-        # self.ei_next_frame_button.clicked.connect(self.next_ei_frame)
-        
-        # # Add controls to layout
-        # ei_control_layout.addWidget(self.ei_prev_frame_button)
-        # ei_control_layout.addWidget(self.ei_frame_slider)
-        # ei_control_layout.addWidget(self.ei_next_frame_button)
-        # ei_control_layout.addWidget(self.ei_frame_label)
-        # ei_control_layout.addWidget(self.ei_play_button)
-        # ei_control_layout.addWidget(self.ei_pause_button)
-        
-        # # Add controls and canvas to layout
-        # spatial_layout.addLayout(ei_control_layout)
-        # self.summary_canvas = MplCanvas(self, width=10, height=8, dpi=120)
-        # spatial_layout.addWidget(self.summary_canvas)
 
         # --- STA Analysis Panel ---
         self.sta_panel = QWidget()
@@ -420,16 +381,16 @@ class MainWindow(QMainWindow):
         self.raw_trace_plot.plotItem.getViewBox().setMouseEnabled(y=False)
         raw_trace_layout.addWidget(self.raw_trace_plot)
 
-        # --- Bottom Splitter: EI and STA side by side ---
-        bottom_splitter = QSplitter(Qt.Orientation.Horizontal)
-        bottom_splitter.addWidget(self.ei_panel)
-        bottom_splitter.addWidget(self.sta_panel)
-        bottom_splitter.setSizes([700, 700])
+        # --- Top Splitter: Waveforms and STA side by side ---
+        top_splitter = QSplitter(Qt.Orientation.Horizontal)
+        top_splitter.addWidget(self.waveforms_panel)
+        top_splitter.addWidget(self.sta_panel)
+        top_splitter.setSizes([600, 600])
 
-        # --- Main Right Splitter: Waveforms on top, EI/STA below ---
+        # --- Main Right Splitter: Top (waveforms+STA), Bottom (EI+TemporalEI) ---
         main_right_splitter = QSplitter(Qt.Orientation.Vertical)
-        main_right_splitter.addWidget(self.waveforms_panel)
-        main_right_splitter.addWidget(bottom_splitter)
+        main_right_splitter.addWidget(top_splitter)
+        main_right_splitter.addWidget(self.ei_panel)
         main_right_splitter.setSizes([400, 600])
 
         # --- Tab Widget for Raw Trace ---
