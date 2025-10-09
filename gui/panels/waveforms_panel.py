@@ -111,7 +111,7 @@ class WaveformPanel(QWidget):
                 self._last_templates,
                 self._last_channel_positions,
                 cluster_ids=self._last_cluster_ids,
-                color_map=self._last_colors
+                colors=self._last_colors
             )
 
     def update_all(self, cluster_ids, color_map=None, colors=None):
