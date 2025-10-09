@@ -3,6 +3,7 @@ from qtpy.QtCore import Qt, QTimer
 import numpy as np
 from gui.widgets import MplCanvas
 import matplotlib.pyplot as plt
+from qtpy.QtWidgets import QSizePolicy
 
 class EIPanel(QWidget):
     """
@@ -33,6 +34,12 @@ class EIPanel(QWidget):
         self.temporal_canvas = MplCanvas(self, width=7, height=6, dpi=120)
         right_layout.addWidget(self.temporal_canvas)
         splitter.addWidget(right_widget)
+        splitter.setSizes([400, 400])
+        self.spatial_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.temporal_canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # In your update_ei or after adding the panel to the layout:
+        QTimer.singleShot(0, self.spatial_canvas.draw)
+        QTimer.singleShot(0, self.temporal_canvas.draw)
 
         # --- Main Layout ---
         main_layout = QVBoxLayout(self)
@@ -134,7 +141,7 @@ class EIPanel(QWidget):
         n_channels = len(channels)
         n_cols = min(n_channels, self.n_max_cols)
         n_rows = (n_channels + n_cols - 1) // n_cols
-        self.temporal_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows)
+        # self.temporal_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows, sharex=True, sharey=True)
         axes = self.temporal_canvas.fig.subplots(nrows=n_rows, ncols=n_cols)
         axes = axes.flatten() if n_channels > 1 else [axes]
 
@@ -148,13 +155,16 @@ class EIPanel(QWidget):
             ax.set_xlabel("Time (ms)")
             # ax.set_ylabel("Amplitude (µV)")
             # ax.legend()
+        self.temporal_canvas.fig.suptitle("Temporal Analysis (EI)", color='white', fontsize=16)
+        self.temporal_canvas.fig.tight_layout()
+        self.temporal_canvas.draw()
     
     def _draw_vision_ei_spatial(self, ei_map_list, cluster_ids, channels=None):
         n_clusters = len(ei_map_list)
         self.spatial_canvas.fig.clear()
         n_cols = min(n_clusters, self.n_max_cols)
         n_rows = (n_clusters + n_cols - 1) // n_cols
-        self.spatial_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows)
+        # self.spatial_canvas.fig.set_size_inches(4 * n_cols, 3 * n_rows)
         axes = self.spatial_canvas.fig.subplots(nrows=n_rows, ncols=n_cols)
         axes = axes.flatten() if n_clusters > 1 else [axes]
 
@@ -170,6 +180,7 @@ class EIPanel(QWidget):
             #         ax.plot(x, y, 'bo', markersize=10, markerfacecolor='none', markeredgewidth=2)
             #         ax.text(x, y, str(ch), color='cyan', fontsize=12, ha='center', va='center')
         self.spatial_canvas.fig.suptitle("Spatial Analysis (EI)", color='white', fontsize=16)
+        self.spatial_canvas.fig.tight_layout()
         self.spatial_canvas.draw()
 
     def _get_top_electrodes(self, ei_map, ei, n_interval=2, n_markers=5, b_sort=True):
