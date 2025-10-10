@@ -7,6 +7,88 @@ import analysis_core
 import vision_integration
 from gui.panels.waveforms_panel import REFRACTORY_PERIOD_MS
 
+def ei_corr(ref_ei_dict, test_ei_dict, 
+            method: str = 'full', n_removed_channels: int = 1) -> np.ndarray:
+    # Courtesy of @DRezeanu
+    # Pull reference eis
+    ref_ids = ref_ei_dict.keys()
+    ref_eis = [ref_ei_dict[cell].ei for cell in ref_ids]
+
+    if n_removed_channels > 0:
+        max_ref_vals = [np.array(np.max(ei, axis = 1)) for ei in ref_eis]
+        ref_to_remove = [np.argsort(val)[-n_removed_channels:] for val in max_ref_vals]
+        ref_eis = [np.delete(ei, ref_to_remove[idx], axis = 0) for idx, ei in enumerate(ref_eis)]
+
+    # Set any EI value where the ei is less than 1.5* its standard deviation to 0
+    for idx, ei in enumerate(ref_eis):
+        ref_eis[idx][abs(ei) < (ei.std()*1.5)] = 0
+
+    # For 'full' method: flatten each 512 x 201 ei array into a vector
+    # and stack flattened eis into a numpy array
+    if 'full' in method:
+        ref_eis_flat = [ei.flatten() for ei in ref_eis]
+        ref_eis = np.array(ref_eis_flat)
+    # For 'time' method, take max of absolute value over time and
+    # stack the resulting 512 x 1 vectors into a numpy array 
+    elif 'space' in method:
+        ref_eis_mean = [np.max(np.abs(ei), axis = 1) for ei in ref_eis]
+        ref_eis = np.array(ref_eis_mean)
+    # For 'power' method, square each 512 x 201 ei array, take the mean over time,
+    # and stack the resulting 512 x 1 vectors into a numpy array
+    elif 'power' in method:
+        ref_eis_mean = [np.mean(ei**2, axis = 1) for ei in ref_eis]
+        ref_eis = np.array(ref_eis_mean)
+    else:
+        raise NameError("Method poperty must be 'full', 'time', or 'power'.")
+
+
+    # Pull test eis
+    test_ids = test_ei_dict.keys()
+    test_eis = [test_ei_dict[cell].ei for cell in test_ids]
+
+    if n_removed_channels > 0:
+        max_test_vals = [np.array(np.max(ei, axis = 1)) for ei in test_eis]
+        test_to_remove = [np.argsort(val)[-n_removed_channels:] for val in max_test_vals]
+        test_eis = [np.delete(ei, test_to_remove[idx], axis = 0) for idx, ei in enumerate(test_eis)]
+
+    # Set the EI value where the EI is less than 1.5* its standard deviation to 0
+    for idx, ei in enumerate(test_eis):
+        test_eis[idx][abs(ei) < (ei.std()*1.5)] = 0
+
+    # For 'full' method: flatten each 512 x 201 ei array into a vector
+    # and stack flattened eis into a numpy array
+    if 'full' in method:
+        test_eis_flat = [ei.flatten() for ei in test_eis]
+        test_eis = np.array(test_eis_flat)
+    # For 'time' method, take max of absolute value over time and
+    # stack the resulting 512 x 1 vectors into a numpy array 
+    elif 'space' in method:
+        test_eis_mean = [np.max(np.abs(ei), axis = 1) for ei in test_eis]
+        test_eis = np.array(test_eis_mean)
+    # For 'power' method, square each 512 x 201 ei array, take the mean over time,
+    # and stack the resulting 512 x 1 vectors into a numpy array
+    elif 'power' in method:
+        test_eis_mean = [np.mean(ei**2, axis = 1) for ei in test_eis]
+        test_eis = np.array(test_eis_mean)
+    else:
+        raise NameError("Method poperty must be 'full', 'space', or 'power'.")
+
+
+    num_pts = ref_eis.shape[1]
+
+    # Calculate covariance and correlation
+    c = test_eis @ ref_eis.T / num_pts
+    d = np.mean(test_eis, axis = 1)[:,None] * np.mean(ref_eis, axis = 1)[:,None].T
+    covs = c - d
+
+    std_calc = np.std(test_eis, axis = 1)[:,None] * np.std(ref_eis, axis = 1)[:, None].T
+    corr = covs / std_calc
+
+    # Set nan values and infinite values to 0
+    np.nan_to_num(corr, copy=False, nan = 0, posinf = 0, neginf = 0)
+
+    return corr.T
+
 
 def sort_electrode_map(electrode_map: np.ndarray) -> np.ndarray:
     """
@@ -139,6 +221,18 @@ class DataManager(QObject):
                 self.vision_sta_width = 100
                 self.vision_sta_height = 100
             
+            # Compute correlation matrices for EIs
+            print(f'[DEBUG] Computing EI correlations')
+            full_corr = ei_corr(self.vision_eis, self.vision_eis, method='full', n_removed_channels=1)
+            space_corr = ei_corr(self.vision_eis, self.vision_eis, method='space', n_removed_channels=1)
+            power_corr = ei_corr(self.vision_eis, self.vision_eis, method='power', n_removed_channels=1)
+            self.ei_corr_dict = {
+                'full': full_corr,
+                'space': space_corr,
+                'power': power_corr
+            }
+            print(f"[DEBUG] EI correlations computed successfully")
+
             print(f"Vision data has been loaded into the DataManager. STA dimensions: {self.vision_sta_width}x{self.vision_sta_height}")
             return True, f"Successfully loaded Vision data for {dataset_name}."
         else:

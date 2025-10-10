@@ -164,7 +164,7 @@ class EIPanel(QWidget):
         if handles:
             self.temporal_canvas.fig.legend(handles, labels, loc='upper center', ncol=len(cluster_ids), bbox_to_anchor=(0.5, 1.02))
         
-        self.temporal_canvas.fig.suptitle("Temporal Analysis (EI)", color='white', fontsize=16)
+        self.temporal_canvas.fig.suptitle("Temporal EI", color='white', fontsize=16)
         self.temporal_canvas.fig.tight_layout()
         self.temporal_canvas.draw()
     
@@ -192,7 +192,7 @@ class EIPanel(QWidget):
         for k in range(i+1, len(axes)):
             axes[k].axis('off')
         
-        self.spatial_canvas.fig.suptitle("Spatial Analysis (EI)", color='white', fontsize=16)
+        self.spatial_canvas.fig.suptitle("Spatial EI", color='white', fontsize=16)
         self.spatial_canvas.fig.tight_layout()
         self.spatial_canvas.draw()
 

@@ -1,7 +1,7 @@
 from qtpy.QtWidgets import QWidget, QVBoxLayout, QLabel, QTableView, QPushButton, QHBoxLayout, QAbstractItemView
 from qtpy.QtCore import Signal, Qt
 from gui.widgets import PandasModel
-import random
+import numpy as np
 import pandas as pd
 
 class SimilarityPanel(QWidget):
@@ -10,8 +10,9 @@ class SimilarityPanel(QWidget):
     # Signal emitted when the "Mark as Duplicates" button is pressed
     mark_duplicates = Signal(list)
 
-    def __init__(self, parent=None):
+    def __init__(self, main_window, parent=None):
         super().__init__(parent)
+        self.main_window = main_window
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -38,25 +39,12 @@ class SimilarityPanel(QWidget):
 
         # Connect selection change after model is set (see set_data)
         self.table_selection_connected = False
-
-    def compute_dummy_similarity(self, id1, id2):
-        """
-        Dummy similarity function (replace with EI correlation later).
-        """
-        return random.uniform(0, 1)
     
     def set_data(self, similarity_df):
         """Set the DataFrame for the similarity table."""
         self.similarity_model = PandasModel(similarity_df)
         self.table.setModel(self.similarity_model)
         self.table.resizeColumnsToContents()
-        # # Connect selectionChanged signal after setting the model
-        # if self.table_selection_connected:
-        #     try:
-        #         self.table.selectionModel().selectionChanged.disconnect(self._on_selection_changed)
-        #     except Exception as e:
-        #         print(f"Error disconnecting selectionChanged signal: {e}")
-        #         pass
         self.table.selectionModel().selectionChanged.connect(self._on_selection_changed)
         self.table_selection_connected = True
 
@@ -79,14 +67,25 @@ class SimilarityPanel(QWidget):
         self.table.setModel(None)
         self.similarity_model = None
 
-    def update_main_cluster_id(self, cluster_id, cluster_df):
-        
-        cluster_ids = cluster_df['cluster_id'].values
-        # All cluster IDs except the main one
-        all_ids = cluster_ids[cluster_ids != cluster_id]
-        # Compute dummy similarity scores
-        similarities = [self.compute_dummy_similarity(cluster_id, other_id) for other_id in all_ids]
-        # Sort by descending
-        sorted_pairs = sorted(zip(all_ids, similarities), key=lambda x: -x[1])
-        df = pd.DataFrame(sorted_pairs, columns=['cluster_id', 'similarity'])
+    def update_main_cluster_id(self, cluster_id):
+        # Get EI correlation values from data_manager
+        if self.main_window.data_manager is None or self.main_window.data_manager.ei_corr_dict is None:
+            print("Error: DataManager or EI correlation data not available.")
+            self.clear()
+            return
+
+        ei_corr_dict = self.main_window.data_manager.ei_corr_dict
+        cluster_ids = np.array(list(self.main_window.data_manager.vision_eis.keys())) - 1
+        main_idx = np.where(cluster_ids == cluster_id)[0][0]
+        other_idx = np.where(cluster_ids != cluster_id)[0]
+        other_ids = cluster_ids[other_idx]
+        d_df = {
+            'cluster_id': other_ids,
+            'full_ei_corr': ei_corr_dict['full'][main_idx, other_idx],
+            'space_ei_corr': ei_corr_dict['space'][main_idx, other_idx],
+            'power_ei_corr': ei_corr_dict['power'][main_idx, other_idx]
+
+        }
+        df = pd.DataFrame(d_df)
+        df = df.sort_values(by='full_ei_corr', ascending=False).reset_index(drop=True)
         self.set_data(df)

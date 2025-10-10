@@ -186,7 +186,7 @@ class MainWindow(QMainWindow):
         else:
             self.select_sta_view(self.current_sta_view)
             
-        self.similarity_panel.update_main_cluster_id(cluster_id, self.data_manager.cluster_df)
+        self.similarity_panel.update_main_cluster_id(cluster_id)
         
         self.status_bar.showMessage("Ready.", 2000)
 
@@ -258,7 +258,7 @@ class MainWindow(QMainWindow):
         left_content_layout.addWidget(self.refine_button)
 
         # --- Similarity Panel ---
-        self.similarity_panel = SimilarityPanel()
+        self.similarity_panel = SimilarityPanel(self)
         left_content_layout.addWidget(self.similarity_panel)
         self.similarity_panel.selection_changed.connect(self.on_similarity_selection_changed)
         self.similarity_panel.mark_duplicates.connect(self.on_mark_duplicates)
@@ -391,7 +391,7 @@ class MainWindow(QMainWindow):
         main_right_splitter = QSplitter(Qt.Orientation.Vertical)
         main_right_splitter.addWidget(top_splitter)
         main_right_splitter.addWidget(self.ei_panel)
-        main_right_splitter.setSizes([400, 600])
+        main_right_splitter.setSizes([600, 400])
 
         # --- Tab Widget for Raw Trace ---
         self.analysis_tabs = QTabWidget()
